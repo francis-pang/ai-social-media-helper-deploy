@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib/core';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
@@ -15,8 +16,9 @@ export interface BackendStackProps extends cdk.StackProps {
 /**
  * BackendStack creates Lambda + API Gateway HTTP API for the backend.
  *
- * Deploys a Go binary (provided.al2023 runtime) that wraps the existing
- * triage logic with S3-based storage and presigned URL uploads.
+ * Deploys a container image Lambda (DDR-027) that bundles the Go binary
+ * alongside ffmpeg and ffprobe for video processing. This replaces the
+ * previous zip-based deployment (DDR-026) to enable video triage in Lambda.
  *
  * Lambda execution role has:
  * - s3:GetObject, s3:PutObject, s3:DeleteObject, s3:ListBucket on the media bucket
@@ -25,21 +27,39 @@ export interface BackendStackProps extends cdk.StackProps {
  */
 export class BackendStack extends cdk.Stack {
   public readonly httpApi: apigwv2.HttpApi;
-  public readonly handler: lambda.Function;
+  public readonly handler: lambda.DockerImageFunction;
+  public readonly ecrRepository: ecr.Repository;
 
   constructor(scope: Construct, id: string, props: BackendStackProps) {
     super(scope, id, props);
 
-    // --- Lambda Function ---
-    // Go binary built from cmd/media-lambda, deployed via CodePipeline after initial setup.
-    this.handler = new lambda.Function(this, 'ApiHandler', {
+    // --- ECR Repository ---
+    // Stores container images for the Lambda function.
+    // Lifecycle rule keeps only the last 5 images to control storage costs.
+    this.ecrRepository = new ecr.Repository(this, 'LambdaImageRepo', {
+      repositoryName: 'ai-social-media-lambda',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      emptyOnDelete: true,
+      lifecycleRules: [
+        {
+          maxImageCount: 5,
+          description: 'Keep only the last 5 images',
+        },
+      ],
+    });
+
+    // --- Lambda Function (Container Image) ---
+    // Container image bundles Go binary + static ffmpeg/ffprobe (DDR-027).
+    // For initial CDK deploy (before pipeline pushes the first image), we use
+    // a placeholder from the application repo's Dockerfile.
+    this.handler = new lambda.DockerImageFunction(this, 'ApiHandler', {
       functionName: 'AiSocialMediaApiHandler',
-      runtime: lambda.Runtime.PROVIDED_AL2023,
-      handler: 'bootstrap',
-      code: lambda.Code.fromAsset(path.join(__dirname, '../.build/lambda')),
+      code: lambda.DockerImageCode.fromImageAsset(
+        path.join(__dirname, '../.build/lambda'),
+      ),
       timeout: cdk.Duration.minutes(5), // Triage can take several minutes
-      memorySize: 1024, // Needs memory for image processing
-      ephemeralStorageSize: cdk.Size.mebibytes(1024), // /tmp for S3 downloads
+      memorySize: 2048, // ffmpeg needs CPU; Lambda allocates CPU proportional to memory (DDR-027)
+      ephemeralStorageSize: cdk.Size.mebibytes(2048), // /tmp for S3 downloads + video compression
       environment: {
         MEDIA_BUCKET_NAME: props.mediaBucket.bucketName,
         SSM_API_KEY_PARAM: '/ai-social-media/prod/gemini-api-key',
@@ -103,6 +123,11 @@ export class BackendStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'LambdaFunctionArn', {
       value: this.handler.functionArn,
       description: 'Lambda function ARN',
+    });
+
+    new cdk.CfnOutput(this, 'EcrRepositoryUri', {
+      value: this.ecrRepository.repositoryUri,
+      description: 'ECR repository URI for Lambda container images',
     });
   }
 }

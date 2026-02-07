@@ -1,5 +1,6 @@
 import * as cdk from 'aws-cdk-lib/core';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
 import * as codepipeline_actions from 'aws-cdk-lib/aws-codepipeline-actions';
 import * as codebuild from 'aws-cdk-lib/aws-codebuild';
@@ -13,16 +14,21 @@ export interface PipelineStackProps extends cdk.StackProps {
   frontendBucket: s3.IBucket;
   /** CloudFront distribution to invalidate after deploy */
   distribution: cloudfront.IDistribution;
-  /** Lambda function to update with new Go binary */
+  /** Lambda function to update with new container image */
   lambdaFunction: lambda.IFunction;
+  /** ECR repository for Lambda container images (from BackendStack) */
+  ecrRepository: ecr.IRepository;
 }
 
 /**
  * PipelineStack creates a CodePipeline CI/CD pipeline that:
  *
  * 1. Source: Pulls from GitHub main branch via CodeStar Connection
- * 2. Build (parallel): Compiles Go Lambda binary + builds Preact SPA
- * 3. Deploy: Syncs SPA to S3, updates Lambda code, invalidates CloudFront
+ * 2. Build (parallel): Builds Docker container image + builds Preact SPA
+ * 3. Deploy: Syncs SPA to S3, updates Lambda with new container image, invalidates CloudFront
+ *
+ * The backend build uses Docker to build the container image (DDR-027) which
+ * bundles the Go binary with ffmpeg/ffprobe for video processing support.
  *
  * triggerOnPush is disabled initially since cmd/media-lambda doesn't exist yet.
  * Enable it once the Go Lambda entry point is committed.
@@ -65,38 +71,66 @@ export class PipelineStack extends cdk.Stack {
       triggerOnPush: false, // Disabled until cmd/media-lambda exists
     });
 
-    // --- Backend Build (Go Lambda binary) ---
-    // Installs Go 1.24 (project requirement) since CodeBuild standard:7.0 only ships 1.21/1.22.
+    // --- Backend Build (Docker container image) ---
+    // Builds the container image from cmd/media-lambda/Dockerfile (DDR-027)
+    // and pushes it to ECR. Requires privileged mode for Docker-in-Docker.
+    const ecrRepoUri = props.ecrRepository.repositoryUri;
+
     const backendBuild = new codebuild.PipelineProject(this, 'BackendBuild', {
       projectName: 'AiSocialMediaBackendBuild',
       environment: {
         buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
-        computeType: codebuild.ComputeType.SMALL,
+        computeType: codebuild.ComputeType.MEDIUM, // Docker builds need more resources
+        privileged: true, // Required for Docker-in-Docker
+      },
+      environmentVariables: {
+        ECR_REPO_URI: { value: ecrRepoUri },
+        AWS_ACCOUNT_ID: { value: this.account },
+        AWS_REGION_NAME: { value: this.region },
       },
       buildSpec: codebuild.BuildSpec.fromObject({
         version: '0.2',
         phases: {
-          install: {
+          pre_build: {
             commands: [
-              'curl -sLO https://go.dev/dl/go1.24.0.linux-amd64.tar.gz',
-              'rm -rf /usr/local/go && tar -C /usr/local -xzf go1.24.0.linux-amd64.tar.gz',
-              'export PATH=/usr/local/go/bin:$PATH',
-              'go version',
+              // Authenticate with ECR
+              'aws ecr get-login-password --region $AWS_REGION_NAME | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION_NAME.amazonaws.com',
             ],
           },
           build: {
             commands: [
-              'export PATH=/usr/local/go/bin:$PATH',
-              'GOARCH=amd64 GOOS=linux CGO_ENABLED=0 go build -o bootstrap ./cmd/media-lambda',
-              'zip function.zip bootstrap',
+              // Build the container image using the Dockerfile in cmd/media-lambda/
+              'docker build -t $ECR_REPO_URI:latest -f cmd/media-lambda/Dockerfile .',
+              // Tag with the commit hash for traceability
+              'docker tag $ECR_REPO_URI:latest $ECR_REPO_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION',
+            ],
+          },
+          post_build: {
+            commands: [
+              // Push both tags to ECR
+              'docker push $ECR_REPO_URI:latest',
+              'docker push $ECR_REPO_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION',
+              // Write the image URI to a file for the deploy stage
+              'echo "{\"imageUri\":\"$ECR_REPO_URI:$CODEBUILD_RESOLVED_SOURCE_VERSION\"}" > imageDetail.json',
             ],
           },
         },
         artifacts: {
-          files: ['function.zip'],
+          files: ['imageDetail.json'],
         },
       }),
     });
+
+    // Grant CodeBuild permission to push images to ECR
+    props.ecrRepository.grantPullPush(backendBuild);
+
+    // Grant CodeBuild permission to get ECR authorization token
+    backendBuild.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['ecr:GetAuthorizationToken'],
+        resources: ['*'],
+      }),
+    );
 
     // --- Frontend Build (Preact SPA) ---
     const frontendBuild = new codebuild.PipelineProject(this, 'FrontendBuild', {
@@ -123,7 +157,7 @@ export class PipelineStack extends cdk.Stack {
       }),
     });
 
-    // --- Deploy Project (Lambda code update + CloudFront invalidation) ---
+    // --- Deploy Project (Lambda image update + CloudFront invalidation) ---
     const deployProject = new codebuild.PipelineProject(this, 'DeployProject', {
       projectName: 'AiSocialMediaDeploy',
       environment: {
@@ -139,9 +173,11 @@ export class PipelineStack extends cdk.Stack {
         phases: {
           build: {
             commands: [
-              // Update Lambda function code with the Go binary
-              'echo "Updating Lambda function $LAMBDA_FUNCTION_NAME..."',
-              'aws lambda update-function-code --function-name $LAMBDA_FUNCTION_NAME --zip-file fileb://function.zip',
+              // Read the image URI from the backend build output
+              'export IMAGE_URI=$(cat imageDetail.json | python3 -c "import sys,json; print(json.load(sys.stdin)[\'imageUri\'])")',
+              // Update Lambda function code with the new container image
+              'echo "Updating Lambda function $LAMBDA_FUNCTION_NAME with image $IMAGE_URI..."',
+              'aws lambda update-function-code --function-name $LAMBDA_FUNCTION_NAME --image-uri $IMAGE_URI',
               // Wait for the function update to complete
               'aws lambda wait function-updated --function-name $LAMBDA_FUNCTION_NAME',
               // Invalidate CloudFront cache
@@ -212,7 +248,7 @@ export class PipelineStack extends cdk.Stack {
           input: frontendBuildOutput,
           runOrder: 1,
         }),
-        // Update Lambda code and invalidate CloudFront (after S3 sync)
+        // Update Lambda with new container image and invalidate CloudFront (after S3 sync)
         new codepipeline_actions.CodeBuildAction({
           actionName: 'DeployBackend',
           project: deployProject,

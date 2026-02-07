@@ -37,6 +37,7 @@ const pipeline = new PipelineStack(app, 'AiSocialMediaPipeline', {
   frontendBucket: frontend.frontendBucket,
   distribution: frontend.distribution,
   lambdaFunction: backend.handler,
+  ecrRepository: backend.ecrRepository,
 });
 pipeline.addDependency(frontend);
 

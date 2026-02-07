@@ -23,6 +23,7 @@ describe('AiSocialMedia Infrastructure', () => {
     frontendBucket: frontend.frontendBucket,
     distribution: frontend.distribution,
     lambdaFunction: backend.handler,
+    ecrRepository: backend.ecrRepository,
   });
 
   test('StorageStack creates media uploads bucket with lifecycle', () => {
