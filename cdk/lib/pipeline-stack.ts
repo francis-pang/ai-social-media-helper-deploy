@@ -20,6 +20,10 @@ export interface PipelineStackProps extends cdk.StackProps {
   ecrRepository: ecr.IRepository;
   /** CodeStar connection ARN (DDR-028: parameterized, not hardcoded) */
   codeStarConnectionArn: string;
+  /** Cognito User Pool ID — passed to frontend build as VITE_COGNITO_USER_POOL_ID */
+  cognitoUserPoolId: string;
+  /** Cognito User Pool Client ID — passed to frontend build as VITE_COGNITO_CLIENT_ID */
+  cognitoClientId: string;
 }
 
 /**
@@ -138,11 +142,17 @@ export class PipelineStack extends cdk.Stack {
     );
 
     // --- Frontend Build (Preact SPA) ---
+    // VITE_* env vars are injected at build time so the SPA has cloud mode config baked in.
     const frontendBuild = new codebuild.PipelineProject(this, 'FrontendBuild', {
       projectName: 'AiSocialMediaFrontendBuild',
       environment: {
         buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
         computeType: codebuild.ComputeType.SMALL,
+      },
+      environmentVariables: {
+        VITE_CLOUD_MODE: { value: '1' },
+        VITE_COGNITO_USER_POOL_ID: { value: props.cognitoUserPoolId },
+        VITE_COGNITO_CLIENT_ID: { value: props.cognitoClientId },
       },
       buildSpec: codebuild.BuildSpec.fromObject({
         version: '0.2',

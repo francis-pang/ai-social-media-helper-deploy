@@ -26,6 +26,8 @@ describe('AiSocialMedia Infrastructure', () => {
     lambdaFunction: backend.handler,
     ecrRepository: backend.ecrRepository,
     codeStarConnectionArn: 'arn:aws:codeconnections:us-east-1:123456789012:connection/test-connection-id',
+    cognitoUserPoolId: backend.userPool.userPoolId,
+    cognitoClientId: backend.userPoolClient.userPoolClientId,
   });
 
   test('StorageStack creates media uploads bucket with lifecycle', () => {

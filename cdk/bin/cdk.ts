@@ -44,6 +44,8 @@ const pipeline = new PipelineStack(app, 'AiSocialMediaPipeline', {
   lambdaFunction: backend.handler,
   ecrRepository: backend.ecrRepository,
   codeStarConnectionArn,
+  cognitoUserPoolId: backend.userPool.userPoolId,
+  cognitoClientId: backend.userPoolClient.userPoolClientId,
 });
 pipeline.addDependency(frontend);
 

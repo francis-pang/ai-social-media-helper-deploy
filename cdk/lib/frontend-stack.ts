@@ -47,7 +47,7 @@ export class FrontendStack extends cdk.Stack {
             "default-src 'self'",
             "img-src 'self' blob: data:",
             "style-src 'self' 'unsafe-inline'",
-            "connect-src 'self' https://*.s3.us-east-1.amazonaws.com https://*.s3.amazonaws.com",
+            "connect-src 'self' https://*.s3.us-east-1.amazonaws.com https://*.s3.amazonaws.com https://cognito-idp.us-east-1.amazonaws.com",
           ].join('; '),
           override: true,
         },
