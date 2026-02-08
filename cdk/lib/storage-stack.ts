@@ -2,18 +2,28 @@ import * as cdk from 'aws-cdk-lib/core';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
 
+export interface StorageStackProps extends cdk.StackProps {
+  /** CloudFront distribution domain for S3 CORS lockdown (DDR-028) */
+  cloudFrontDomain?: string;
+}
+
 /**
  * StorageStack creates the S3 bucket for ephemeral media uploads.
  *
  * - Block all public access; files are accessed only via presigned URLs
  * - 24-hour lifecycle rule (triage media is ephemeral)
- * - CORS allows PUT from any HTTPS origin (secured by presigned URLs)
+ * - CORS restricted to CloudFront domain (DDR-028 Problem 9)
  */
 export class StorageStack extends cdk.Stack {
   public readonly mediaBucket: s3.Bucket;
 
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+  constructor(scope: Construct, id: string, props?: StorageStackProps) {
     super(scope, id, props);
+
+    // Restrict S3 CORS to CloudFront domain if known (DDR-028 Problem 9)
+    const allowedOrigins = props?.cloudFrontDomain
+      ? [`https://${props.cloudFrontDomain}`]
+      : ['https://*.cloudfront.net']; // Fallback: allow any CloudFront distribution
 
     this.mediaBucket = new s3.Bucket(this, 'MediaUploads', {
       bucketName: `ai-social-media-uploads-${this.account}`,
@@ -32,7 +42,7 @@ export class StorageStack extends cdk.Stack {
         {
           allowedHeaders: ['*'],
           allowedMethods: [s3.HttpMethods.PUT],
-          allowedOrigins: ['*'], // Secured by presigned URLs; tightened when custom domain is set
+          allowedOrigins,
           maxAge: 3600,
         },
       ],

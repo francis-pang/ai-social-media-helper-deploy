@@ -18,6 +18,8 @@ export interface PipelineStackProps extends cdk.StackProps {
   lambdaFunction: lambda.IFunction;
   /** ECR repository for Lambda container images (from BackendStack) */
   ecrRepository: ecr.IRepository;
+  /** CodeStar connection ARN (DDR-028: parameterized, not hardcoded) */
+  codeStarConnectionArn: string;
 }
 
 /**
@@ -60,13 +62,13 @@ export class PipelineStack extends cdk.Stack {
 
     // --- Source Action (GitHub via CodeStar Connection) ---
     // Connection created manually in AWS Console (one-time OAuth handshake).
+    // ARN is parameterized via environment variable (DDR-028 Problem 15).
     const sourceAction = new codepipeline_actions.CodeStarConnectionsSourceAction({
       actionName: 'GitHub',
       owner: 'francis-pang',
       repo: 'ai-social-media-helper',
       branch: 'main',
-      connectionArn:
-        'arn:aws:codeconnections:us-east-1:123456789012:connection/YOUR_CONNECTION_ID',
+      connectionArn: props.codeStarConnectionArn,
       output: sourceOutput,
       triggerOnPush: false, // Disabled until cmd/media-lambda exists
     });
@@ -95,6 +97,9 @@ export class PipelineStack extends cdk.Stack {
             commands: [
               // Authenticate with ECR
               'aws ecr get-login-password --region $AWS_REGION_NAME | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION_NAME.amazonaws.com',
+              // Dependency vulnerability scanning (DDR-028 Problem 15)
+              'go install golang.org/x/vuln/cmd/govulncheck@latest',
+              'govulncheck ./... || echo "WARN: govulncheck found vulnerabilities (non-blocking)"',
             ],
           },
           build: {
@@ -147,7 +152,11 @@ export class PipelineStack extends cdk.Stack {
             commands: ['cd web/frontend && npm ci'],
           },
           build: {
-            commands: ['cd web/frontend && npm run build'],
+            commands: [
+              // Dependency vulnerability scanning (DDR-028 Problem 15)
+              'cd web/frontend && npm audit --audit-level=high || echo "WARN: npm audit found vulnerabilities (non-blocking)"',
+              'cd web/frontend && npm run build',
+            ],
           },
         },
         artifacts: {

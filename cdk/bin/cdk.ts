@@ -14,20 +14,25 @@ const env: cdk.Environment = {
   region: process.env.CDK_DEFAULT_REGION || 'us-east-1',
 };
 
+// CodeStar connection ARN — read from environment or use default (DDR-028 Problem 15)
+const codeStarConnectionArn = process.env.CODESTAR_CONNECTION_ARN
+  || 'arn:aws:codeconnections:us-east-1:123456789012:connection/YOUR_CONNECTION_ID';
+
 // 1. Storage: Media uploads S3 bucket with 24h lifecycle
 const storage = new StorageStack(app, 'AiSocialMediaStorage', { env });
 
-// 2. Backend: Lambda (Go) + API Gateway HTTP API
+// 2. Backend: Lambda (Go) + API Gateway HTTP API + Cognito auth (DDR-028)
 const backend = new BackendStack(app, 'AiSocialMediaBackend', {
   env,
   mediaBucket: storage.mediaBucket,
 });
 backend.addDependency(storage);
 
-// 3. Frontend: S3 + CloudFront with OAC, security headers, and /api/* proxy to API Gateway
+// 3. Frontend: S3 + CloudFront with OAC, security headers, origin-verify, and /api/* proxy
 const frontend = new FrontendStack(app, 'AiSocialMediaFrontend', {
   env,
   apiEndpoint: backend.httpApi.apiEndpoint,
+  originVerifySecret: cdk.Fn.select(2, cdk.Fn.split('/', backend.stackId)),
 });
 frontend.addDependency(backend);
 
@@ -38,6 +43,7 @@ const pipeline = new PipelineStack(app, 'AiSocialMediaPipeline', {
   distribution: frontend.distribution,
   lambdaFunction: backend.handler,
   ecrRepository: backend.ecrRepository,
+  codeStarConnectionArn,
 });
 pipeline.addDependency(frontend);
 

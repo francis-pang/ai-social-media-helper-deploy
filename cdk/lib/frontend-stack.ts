@@ -7,6 +7,8 @@ import { Construct } from 'constructs';
 export interface FrontendStackProps extends cdk.StackProps {
   /** API Gateway endpoint URL (e.g. https://xxx.execute-api.us-east-1.amazonaws.com) */
   apiEndpoint: string;
+  /** Origin-verify shared secret — CloudFront sends this header to API Gateway (DDR-028) */
+  originVerifySecret: string;
 }
 
 /**
@@ -89,8 +91,13 @@ export class FrontendStack extends cdk.Stack {
 
     // API Gateway origin: extract domain from endpoint URL (https://xxx.execute-api...).
     // CloudFront proxies /api/* to API Gateway so the SPA makes same-origin requests.
+    // The x-origin-verify custom header ensures only CloudFront can reach the API (DDR-028 Problem 1).
     const apiDomain = cdk.Fn.select(2, cdk.Fn.split('/', props.apiEndpoint));
-    const apiOrigin = new origins.HttpOrigin(apiDomain);
+    const apiOrigin = new origins.HttpOrigin(apiDomain, {
+      customHeaders: {
+        'x-origin-verify': props.originVerifySecret,
+      },
+    });
 
     this.distribution = new cloudfront.Distribution(this, 'Distribution', {
       defaultBehavior: {

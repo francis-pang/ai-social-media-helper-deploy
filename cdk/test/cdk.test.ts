@@ -17,6 +17,7 @@ describe('AiSocialMedia Infrastructure', () => {
   const frontend = new FrontendStack(app, 'TestFrontend', {
     env,
     apiEndpoint: backend.httpApi.apiEndpoint,
+    originVerifySecret: 'test-origin-verify-secret',
   });
   const pipeline = new PipelineStack(app, 'TestPipeline', {
     env,
@@ -24,6 +25,7 @@ describe('AiSocialMedia Infrastructure', () => {
     distribution: frontend.distribution,
     lambdaFunction: backend.handler,
     ecrRepository: backend.ecrRepository,
+    codeStarConnectionArn: 'arn:aws:codeconnections:us-east-1:123456789012:connection/test-connection-id',
   });
 
   test('StorageStack creates media uploads bucket with lifecycle', () => {
