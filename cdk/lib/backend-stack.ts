@@ -36,7 +36,7 @@ export interface BackendStackProps extends cdk.StackProps {
  */
 export class BackendStack extends cdk.Stack {
   public readonly httpApi: apigwv2.HttpApi;
-  public readonly handler: lambda.DockerImageFunction;
+  public readonly handler: lambda.Function;
   public readonly ecrRepository: ecr.Repository;
   public readonly userPool: cognito.UserPool;
   public readonly userPoolClient: cognito.UserPoolClient;
@@ -96,12 +96,18 @@ export class BackendStack extends cdk.Stack {
     // Generate once and store in SSM for rotation if needed.
     const originVerifySecret = cdk.Fn.select(2, cdk.Fn.split('/', this.stackId));
 
-    // --- Lambda Function (Container Image) ---
-    // Container image bundles Go binary + static ffmpeg/ffprobe (DDR-027).
-    this.handler = new lambda.DockerImageFunction(this, 'ApiHandler', {
+    // --- Lambda Function ---
+    // CDK deploys the Go binary as a zip-based function (provided.al2023).
+    // The CodePipeline (PipelineStack) builds the container image with ffmpeg/ffprobe
+    // and updates the Lambda to use it. This avoids requiring Docker locally for
+    // CDK deploys while letting the pipeline handle the container image lifecycle.
+    this.handler = new lambda.Function(this, 'ApiHandler', {
       functionName: 'AiSocialMediaApiHandler',
-      code: lambda.DockerImageCode.fromImageAsset(
+      runtime: lambda.Runtime.PROVIDED_AL2023,
+      handler: 'bootstrap',
+      code: lambda.Code.fromAsset(
         path.join(__dirname, '../.build/lambda'),
+        { exclude: ['Dockerfile'] },
       ),
       timeout: cdk.Duration.minutes(5), // Triage can take several minutes
       memorySize: 2048, // ffmpeg needs CPU; Lambda allocates CPU proportional to memory (DDR-027)
