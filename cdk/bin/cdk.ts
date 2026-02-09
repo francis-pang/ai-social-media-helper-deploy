@@ -12,6 +12,9 @@ import { WebhookStack } from '../lib/webhook-stack';
 
 const app = new cdk.App();
 
+// Tag every resource for cost tracking in AWS Cost Explorer (DDR-049).
+cdk.Tags.of(app).add('Project', 'ai-social-media-helper');
+
 // All resources use 'AiSocialMedia' prefix to match scoped IAM policies (DDR-023).
 // S3 buckets use 'ai-social-media-' prefix (lowercase with hyphens per S3 naming rules).
 const env: cdk.Environment = {
