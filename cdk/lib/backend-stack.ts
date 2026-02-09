@@ -187,7 +187,6 @@ export class BackendStack extends cdk.Stack {
     // Handles HTTP requests via API Gateway. Fast responses only.
     // For long-running work: starts Step Functions executions.
     this.apiHandler = new lambda.DockerImageFunction(this, 'ApiHandler', {
-      functionName: 'AiSocialMediaApiHandler',
       code: lambda.DockerImageCode.fromEcr(this.lightEcrRepo, { tagOrDigest: 'api-latest' }),
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
@@ -205,7 +204,6 @@ export class BackendStack extends cdk.Stack {
     // Invoked by Step Functions Map state — one invocation per media file.
     // Generates 400px thumbnail (image: Go resize, video: ffmpeg frame).
     this.thumbnailProcessor = new lambda.DockerImageFunction(this, 'ThumbnailProcessor', {
-      functionName: 'AiSocialMediaThumbnailProcessor',
       // Uses select-latest as initial placeholder; pipeline updates to correct image
       code: lambda.DockerImageCode.fromEcr(this.heavyEcrRepo, { tagOrDigest: 'select-latest' }),
       timeout: cdk.Duration.minutes(2),
@@ -218,7 +216,6 @@ export class BackendStack extends cdk.Stack {
     // Invoked by Step Functions after thumbnails are generated.
     // Downloads all thumbnails, sends to Gemini for AI selection.
     this.selectionProcessor = new lambda.DockerImageFunction(this, 'SelectionProcessor', {
-      functionName: 'AiSocialMediaSelectionProcessor',
       code: lambda.DockerImageCode.fromEcr(this.heavyEcrRepo, { tagOrDigest: 'select-latest' }),
       timeout: cdk.Duration.minutes(15),
       memorySize: 4096,
@@ -230,7 +227,6 @@ export class BackendStack extends cdk.Stack {
     // Invoked by Step Functions Map state — one invocation per photo.
     // Sends photo to Gemini for AI image editing.
     this.enhancementProcessor = new lambda.DockerImageFunction(this, 'EnhancementProcessor', {
-      functionName: 'AiSocialMediaEnhancementProcessor',
       // Uses api-latest as initial placeholder; pipeline updates to correct image
       code: lambda.DockerImageCode.fromEcr(this.lightEcrRepo, { tagOrDigest: 'api-latest' }),
       timeout: cdk.Duration.minutes(5),
@@ -243,7 +239,6 @@ export class BackendStack extends cdk.Stack {
     // Invoked by Step Functions Map state — one invocation per video.
     // Downloads video, runs ffmpeg enhancement, uploads result.
     this.videoProcessor = new lambda.DockerImageFunction(this, 'VideoProcessor', {
-      functionName: 'AiSocialMediaVideoProcessor',
       // Uses select-latest as initial placeholder; pipeline updates to correct image
       code: lambda.DockerImageCode.fromEcr(this.heavyEcrRepo, { tagOrDigest: 'select-latest' }),
       timeout: cdk.Duration.minutes(15),
