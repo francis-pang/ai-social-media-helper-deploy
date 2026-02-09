@@ -134,7 +134,7 @@ export class BackendPipelineStack extends cdk.Stack {
           },
           build: {
             commands: [
-              'COMMIT=${CODEBUILD_RESOLVED_SOURCE_VERSION:0:7}',
+              'COMMIT=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c1-7)',
 
               // --- ECR Private: Light images (proprietary, no ffmpeg) ---
               // Build 1: API Lambda (auth, session management, prompt orchestration)
