@@ -91,17 +91,18 @@ const frontendPipeline = new FrontendPipelineStack(app, 'AiSocialMediaFrontendPi
 frontendPipeline.addDependency(frontend);
 
 // =========================================================================
-// 6. Webhook (STATELESS): Dedicated CloudFront + API Gateway + Lambda for Meta webhooks (DDR-044)
+// 6. Webhook (STATELESS): CloudFront + API Gateway + Lambdas for Meta callbacks (DDR-044, DDR-048)
 // =========================================================================
-// ECR repo comes from RegistryStack (DDR-046)
+// ECR repos come from RegistryStack (DDR-046)
 const webhook = new WebhookStack(app, 'AiSocialMediaWebhook', {
   env,
   webhookEcrRepo: registry.webhookEcrRepo,
+  oauthEcrRepo: registry.oauthEcrRepo,
 });
 webhook.addDependency(registry);
 
 // =========================================================================
-// 7. Backend Pipeline (STATELESS): 6 Docker builds -> 6 Lambda updates (DDR-035, DDR-041, DDR-044)
+// 7. Backend Pipeline (STATELESS): 7 Docker builds -> 7 Lambda updates (DDR-035, DDR-041, DDR-044, DDR-048)
 // =========================================================================
 // ECR repos come from RegistryStack (DDR-046), artifact bucket from StorageStack (DDR-045)
 const backendPipeline = new BackendPipelineStack(app, 'AiSocialMediaBackendPipeline', {
@@ -117,6 +118,8 @@ const backendPipeline = new BackendPipelineStack(app, 'AiSocialMediaBackendPipel
   videoProcessor: backend.videoProcessor,
   webhookEcrRepo: registry.webhookEcrRepo,
   webhookHandler: webhook.webhookHandler,
+  oauthEcrRepo: registry.oauthEcrRepo,
+  oauthHandler: webhook.oauthHandler,
   codeStarConnectionArn,
   artifactBucket: storage.beArtifactBucket,
 });

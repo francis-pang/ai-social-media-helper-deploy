@@ -11,30 +11,36 @@ import { Construct } from 'constructs';
 export interface WebhookStackProps extends cdk.StackProps {
   /** ECR Private repository for webhook Lambda image (from RegistryStack, DDR-046) */
   webhookEcrRepo: ecr.IRepository;
+  /** ECR Private repository for OAuth Lambda image (from RegistryStack, DDR-048) */
+  oauthEcrRepo: ecr.IRepository;
 }
 
 /**
- * WebhookStack creates a fully isolated infrastructure for receiving
- * Meta/Instagram webhook notifications (DDR-044).
+ * WebhookStack creates infrastructure for receiving Meta/Instagram
+ * callbacks: webhook notifications (DDR-044) and OAuth redirects (DDR-048).
  *
  * Components:
- * - Lightweight Lambda function (128 MB, 10s timeout)
- * - API Gateway HTTP API (no auth, server-to-server)
+ * - Webhook Lambda (128 MB, 10s) — Meta webhook verification + event handling
+ * - OAuth Lambda (128 MB, 10s) — Instagram OAuth token exchange (DDR-048)
+ * - API Gateway HTTP API (no auth, server-to-server / browser redirect)
  * - CloudFront distribution (HTTPS, DDoS protection)
  *
- * ECR repository is owned by RegistryStack (DDR-046). This stack depends
- * on RegistryStack for the webhook ECR repo but has NO dependencies on
- * BackendStack, StorageStack, or FrontendStack.
+ * ECR repositories are owned by RegistryStack (DDR-046). This stack depends
+ * on RegistryStack for ECR repos but has NO dependencies on BackendStack,
+ * StorageStack, or FrontendStack.
  *
  * Security model:
  * - No JWT auth (Meta cannot authenticate with Cognito)
  * - No origin-verify (requests come from Meta, not CloudFront SPA)
- * - HMAC-SHA256 signature verification on POST payloads (in Lambda code)
+ * - HMAC-SHA256 signature verification on POST /webhook payloads (in Lambda code)
+ * - OAuth Lambda reads/writes SSM parameters for token management
  * - API Gateway throttling (10 burst / 5 steady)
  */
 export class WebhookStack extends cdk.Stack {
   /** Webhook Lambda function (used by pipeline for deployment) */
   public readonly webhookHandler: lambda.Function;
+  /** OAuth Lambda function (used by pipeline for deployment, DDR-048) */
+  public readonly oauthHandler: lambda.Function;
 
   constructor(scope: Construct, id: string, props: WebhookStackProps) {
     super(scope, id, props);
@@ -93,6 +99,57 @@ export class WebhookStack extends cdk.Stack {
     });
 
     // =========================================================================
+    // OAuth Lambda (DDR-048: Instagram token exchange)
+    // =========================================================================
+    this.oauthHandler = new lambda.DockerImageFunction(this, 'OAuthHandler', {
+      code: lambda.DockerImageCode.fromEcr(props.oauthEcrRepo, { tagOrDigest: 'oauth-latest' }),
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 128,
+      environment: {
+        SSM_APP_ID_PARAM: '/ai-social-media/prod/instagram-app-id',
+        SSM_APP_SECRET_PARAM: '/ai-social-media/prod/instagram-app-secret',
+        SSM_REDIRECT_URI_PARAM: '/ai-social-media/prod/instagram-oauth-redirect-uri',
+        SSM_TOKEN_PARAM: '/ai-social-media/prod/instagram-access-token',
+        SSM_USER_ID_PARAM: '/ai-social-media/prod/instagram-user-id',
+      },
+    });
+
+    // SSM read permission for OAuth credentials
+    this.oauthHandler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['ssm:GetParameter'],
+        resources: [
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/instagram-app-id`,
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/instagram-app-secret`,
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/instagram-oauth-redirect-uri`,
+        ],
+      }),
+    );
+
+    // SSM write permission for storing tokens (DDR-048)
+    this.oauthHandler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['ssm:PutParameter'],
+        resources: [
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/instagram-access-token`,
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/instagram-user-id`,
+        ],
+      }),
+    );
+
+    const oauthIntegration = new integrations.HttpLambdaIntegration(
+      'OAuthLambdaIntegration',
+      this.oauthHandler,
+    );
+
+    // OAuth callback route: GET /oauth/callback (browser redirect from Meta)
+    httpApi.addRoutes({
+      path: '/oauth/callback',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: oauthIntegration,
+    });
+
+    // =========================================================================
     // CloudFront Distribution (DDR-044: HTTPS, DDoS protection)
     // =========================================================================
     const apiDomain = cdk.Fn.select(2, cdk.Fn.split('/', httpApi.apiEndpoint));
@@ -113,7 +170,7 @@ export class WebhookStack extends cdk.Stack {
     // =========================================================================
     new cdk.CfnOutput(this, 'WebhookDistributionDomain', {
       value: distribution.distributionDomainName,
-      description: 'Webhook CloudFront domain — use as Meta Callback URL: https://<domain>/webhook',
+      description: 'CloudFront domain — Webhook: https://<domain>/webhook, OAuth: https://<domain>/oauth/callback',
     });
 
     new cdk.CfnOutput(this, 'WebhookDistributionId', {
@@ -131,6 +188,11 @@ export class WebhookStack extends cdk.Stack {
       description: 'Webhook Lambda function name',
     });
 
-    // ECR repo output is in RegistryStack (DDR-046)
+    new cdk.CfnOutput(this, 'OAuthLambdaName', {
+      value: this.oauthHandler.functionName,
+      description: 'OAuth Lambda function name (DDR-048)',
+    });
+
+    // ECR repo outputs are in RegistryStack (DDR-046)
   }
 }

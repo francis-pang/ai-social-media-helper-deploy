@@ -33,6 +33,8 @@ export class RegistryStack extends cdk.Stack {
   public readonly heavyEcrRepo: ecr.Repository;
   /** Webhook Lambda (dedicated repo — DDR-044) */
   public readonly webhookEcrRepo: ecr.Repository;
+  /** OAuth Lambda (dedicated repo — DDR-048) */
+  public readonly oauthEcrRepo: ecr.Repository;
 
   // --- ECR Public (generic code — DDR-041) ---
   /** Public light images: Enhancement Lambda (generic Gemini passthrough) */
@@ -86,6 +88,18 @@ export class RegistryStack extends cdk.Stack {
       ],
     });
 
+    this.oauthEcrRepo = new ecr.Repository(this, 'OAuthImageRepo', {
+      repositoryName: 'ai-social-media-oauth',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      emptyOnDelete: true,
+      lifecycleRules: [
+        {
+          maxImageCount: 10, // Keep recent images for rollback (DDR-046)
+          description: 'Keep only the 10 most recent images',
+        },
+      ],
+    });
+
     // =========================================================================
     // ECR Public Repositories (DDR-041: generic, non-proprietary code)
     // =========================================================================
@@ -126,6 +140,11 @@ export class RegistryStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'WebhookEcrRepoUri', {
       value: this.webhookEcrRepo.repositoryUri,
       description: 'ECR Private repository URI for webhook Lambda image',
+    });
+
+    new cdk.CfnOutput(this, 'OAuthEcrRepoUri', {
+      value: this.oauthEcrRepo.repositoryUri,
+      description: 'ECR Private repository URI for OAuth Lambda image (DDR-048)',
     });
 
     new cdk.CfnOutput(this, 'PublicLightEcrRepoArn', {

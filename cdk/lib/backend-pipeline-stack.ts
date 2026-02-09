@@ -27,6 +27,10 @@ export interface BackendPipelineStackProps extends cdk.StackProps {
   webhookEcrRepo: ecr.IRepository;
   /** Webhook Lambda function to update after build (DDR-044) */
   webhookHandler: lambda.IFunction;
+  /** ECR Private repository for OAuth Lambda image (DDR-048) */
+  oauthEcrRepo: ecr.IRepository;
+  /** OAuth Lambda function to update after build (DDR-048) */
+  oauthHandler: lambda.IFunction;
   /** CodeStar connection ARN (DDR-028: parameterized, not hardcoded) */
   codeStarConnectionArn: string;
   /** Pipeline artifacts S3 bucket (from StorageStack — DDR-045: stateful/stateless split) */
@@ -34,20 +38,20 @@ export interface BackendPipelineStackProps extends cdk.StackProps {
 }
 
 /**
- * BackendPipelineStack creates a CodePipeline that builds all 6 Lambda
- * container images and deploys them independently of the frontend (DDR-035, DDR-044).
+ * BackendPipelineStack creates a CodePipeline that builds all 7 Lambda
+ * container images and deploys them independently of the frontend (DDR-035, DDR-044, DDR-048).
  *
- * Container Registry Strategy (DDR-041, DDR-044):
- * - ECR Private: API (light) + Selection (heavy) + Webhook (dedicated) — proprietary code
+ * Container Registry Strategy (DDR-041, DDR-044, DDR-048):
+ * - ECR Private: API (light) + Selection (heavy) + Webhook + OAuth (dedicated) — proprietary code
  * - ECR Public: Enhancement (light) + Thumbnail + Video (heavy) — generic code
  *
  * Pipeline stages:
  * 1. Source: GitHub main branch via CodeStar Connection
- * 2. Build: 6 Docker builds — 3 to ECR Private, 3 to ECR Public
- * 3. Deploy: Update all 6 Lambda functions with their specific image URIs
+ * 2. Build: 7 Docker builds — 4 to ECR Private, 3 to ECR Public
+ * 3. Deploy: Update all 7 Lambda functions with their specific image URIs
  *
  * Each Lambda gets its own container image with exactly one Go binary.
- * Docker layer caching means builds 2-6 reuse the Go module download
+ * Docker layer caching means builds 2-7 reuse the Go module download
  * layer from build 1 (~30s saved per subsequent build).
  *
  * See docs/DOCKER-IMAGES.md for the full image strategy and layer sharing.
@@ -79,6 +83,7 @@ export class BackendPipelineStack extends cdk.Stack {
     const privateLight = props.lightEcrRepo.repositoryUri;
     const privateHeavy = props.heavyEcrRepo.repositoryUri;
     const privateWebhook = props.webhookEcrRepo.repositoryUri;
+    const privateOauth = props.oauthEcrRepo.repositoryUri;
     // ECR Public repo URIs (public.ecr.aws/<alias>/<repo-name>)
     // The public registry alias is resolved after the first push. We construct
     // the URI at build time using the AWS CLI to fetch the registry alias.
@@ -100,6 +105,7 @@ export class BackendPipelineStack extends cdk.Stack {
         PRIVATE_LIGHT_URI: { value: privateLight },
         PRIVATE_HEAVY_URI: { value: privateHeavy },
         PRIVATE_WEBHOOK_URI: { value: privateWebhook },
+        PRIVATE_OAUTH_URI: { value: privateOauth },
         PUBLIC_LIGHT_NAME: { value: publicLightName },
         PUBLIC_HEAVY_NAME: { value: publicHeavyName },
         AWS_ACCOUNT_ID: { value: this.account },
@@ -133,6 +139,7 @@ export class BackendPipelineStack extends cdk.Stack {
               'docker pull $PRIVATE_LIGHT_URI:api-latest || true',
               'docker pull $PRIVATE_HEAVY_URI:select-latest || true',
               'docker pull $PRIVATE_WEBHOOK_URI:webhook-latest || true',
+              'docker pull $PRIVATE_OAUTH_URI:oauth-latest || true',
               // Go vulnerability scanning
               'go install golang.org/x/vuln/cmd/govulncheck@latest',
               'govulncheck ./... || echo "WARN: govulncheck found vulnerabilities (non-blocking)"',
@@ -147,7 +154,7 @@ export class BackendPipelineStack extends cdk.Stack {
               'LAST_BUILD=$(aws ssm get-parameter --name /ai-social-media/last-build-commit --query "Parameter.Value" --output text 2>/dev/null || echo "")',
               'BUILD_ALL=true',
               // Per-Lambda flags (only used when shared code did NOT change)
-              'BUILD_API=false; BUILD_ENHANCE=false; BUILD_WEBHOOK=false',
+              'BUILD_API=false; BUILD_ENHANCE=false; BUILD_WEBHOOK=false; BUILD_OAUTH=false',
               'BUILD_THUMB=false; BUILD_SELECT=false; BUILD_VIDEO=false',
 
               // Determine which images need rebuilding based on changed files
@@ -161,10 +168,11 @@ export class BackendPipelineStack extends cdk.Stack {
                   + 'echo "$CHANGED" | grep -q "^cmd/media-lambda/" && BUILD_API=true; '
                   + 'echo "$CHANGED" | grep -q "^cmd/enhance-lambda/" && BUILD_ENHANCE=true; '
                   + 'echo "$CHANGED" | grep -q "^cmd/webhook-lambda/" && BUILD_WEBHOOK=true; '
+                  + 'echo "$CHANGED" | grep -q "^cmd/oauth-lambda/" && BUILD_OAUTH=true; '
                   + 'echo "$CHANGED" | grep -q "^cmd/thumbnail-lambda/" && BUILD_THUMB=true; '
                   + 'echo "$CHANGED" | grep -q "^cmd/selection-lambda/" && BUILD_SELECT=true; '
                   + 'echo "$CHANGED" | grep -q "^cmd/video-lambda/" && BUILD_VIDEO=true; '
-                  + 'echo "Selective build: API=$BUILD_API ENHANCE=$BUILD_ENHANCE WEBHOOK=$BUILD_WEBHOOK THUMB=$BUILD_THUMB SELECT=$BUILD_SELECT VIDEO=$BUILD_VIDEO"; '
+                  + 'echo "Selective build: API=$BUILD_API ENHANCE=$BUILD_ENHANCE WEBHOOK=$BUILD_WEBHOOK OAUTH=$BUILD_OAUTH THUMB=$BUILD_THUMB SELECT=$BUILD_SELECT VIDEO=$BUILD_VIDEO"; '
                 + 'fi; '
               + 'else echo "No previous build commit found — rebuilding ALL images"; fi',
 
@@ -176,6 +184,7 @@ export class BackendPipelineStack extends cdk.Stack {
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_API" = "true" ]) && touch /tmp/built-api && build_image media-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:api-$COMMIT -t $PRIVATE_LIGHT_URI:api-latest" "$PRIVATE_LIGHT_URI:api-latest" &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_ENHANCE" = "true" ]) && touch /tmp/built-enhance && build_image enhance-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest -t $PUBLIC_LIGHT_URI:enhance-$COMMIT -t $PUBLIC_LIGHT_URI:enhance-latest" "$PRIVATE_LIGHT_URI:api-latest" &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_WEBHOOK" = "true" ]) && touch /tmp/built-webhook && build_image webhook-lambda Dockerfile.light "-t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest" "$PRIVATE_WEBHOOK_URI:webhook-latest" &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_OAUTH" = "true" ]) && touch /tmp/built-oauth && build_image oauth-lambda Dockerfile.light "-t $PRIVATE_OAUTH_URI:oauth-$COMMIT -t $PRIVATE_OAUTH_URI:oauth-latest" "$PRIVATE_OAUTH_URI:oauth-latest" &',
               'wait',
 
               // Wave 2: Heavy images (slower, ~60-90s each, includes ffmpeg)
@@ -185,7 +194,7 @@ export class BackendPipelineStack extends cdk.Stack {
               'wait',
 
               // Log build summary
-              'echo "=== Build summary ==="; for img in api enhance webhook thumb select video; do [ -f /tmp/built-$img ] && echo "  $img: BUILT" || echo "  $img: SKIPPED (unchanged)"; done',
+              'echo "=== Build summary ==="; for img in api enhance webhook oauth thumb select video; do [ -f /tmp/built-$img ] && echo "  $img: BUILT" || echo "  $img: SKIPPED (unchanged)"; done',
             ],
           },
           post_build: {
@@ -207,6 +216,9 @@ export class BackendPipelineStack extends cdk.Stack {
               // ECR Private: webhook (only if built, DDR-044)
               '[ -f /tmp/built-webhook ] && docker push $PRIVATE_WEBHOOK_URI:webhook-$COMMIT &',
               '[ -f /tmp/built-webhook ] && docker push $PRIVATE_WEBHOOK_URI:webhook-latest &',
+              // ECR Private: oauth (only if built, DDR-048)
+              '[ -f /tmp/built-oauth ] && docker push $PRIVATE_OAUTH_URI:oauth-$COMMIT &',
+              '[ -f /tmp/built-oauth ] && docker push $PRIVATE_OAUTH_URI:oauth-latest &',
               // ECR Public images (only if built, DDR-041)
               '[ -f /tmp/built-enhance ] && docker push $PUBLIC_LIGHT_URI:enhance-$COMMIT &',
               '[ -f /tmp/built-enhance ] && docker push $PUBLIC_LIGHT_URI:enhance-latest &',
@@ -223,7 +235,8 @@ export class BackendPipelineStack extends cdk.Stack {
               'SELECT_TAG=$([ -f /tmp/built-select ] && echo "select-$COMMIT" || echo "select-latest")',
               'VIDEO_TAG=$([ -f /tmp/built-video ] && echo "video-$COMMIT" || echo "video-latest")',
               'WEBHOOK_TAG=$([ -f /tmp/built-webhook ] && echo "webhook-$COMMIT" || echo "webhook-latest")',
-              `echo '{"apiImage":"'$PRIVATE_LIGHT_URI:$API_TAG'","enhanceImage":"'$PRIVATE_LIGHT_URI:$ENHANCE_TAG'","thumbImage":"'$PRIVATE_HEAVY_URI:$THUMB_TAG'","selectImage":"'$PRIVATE_HEAVY_URI:$SELECT_TAG'","videoImage":"'$PRIVATE_HEAVY_URI:$VIDEO_TAG'","webhookImage":"'$PRIVATE_WEBHOOK_URI:$WEBHOOK_TAG'"}' > imageDetail.json`,
+              'OAUTH_TAG=$([ -f /tmp/built-oauth ] && echo "oauth-$COMMIT" || echo "oauth-latest")',
+              `echo '{"apiImage":"'$PRIVATE_LIGHT_URI:$API_TAG'","enhanceImage":"'$PRIVATE_LIGHT_URI:$ENHANCE_TAG'","thumbImage":"'$PRIVATE_HEAVY_URI:$THUMB_TAG'","selectImage":"'$PRIVATE_HEAVY_URI:$SELECT_TAG'","videoImage":"'$PRIVATE_HEAVY_URI:$VIDEO_TAG'","webhookImage":"'$PRIVATE_WEBHOOK_URI:$WEBHOOK_TAG'","oauthImage":"'$PRIVATE_OAUTH_URI:$OAUTH_TAG'"}' > imageDetail.json`,
             ],
           },
         },
@@ -243,6 +256,7 @@ export class BackendPipelineStack extends cdk.Stack {
     props.lightEcrRepo.grantPullPush(backendBuild);
     props.heavyEcrRepo.grantPullPush(backendBuild);
     props.webhookEcrRepo.grantPullPush(backendBuild);
+    props.oauthEcrRepo.grantPullPush(backendBuild);
 
     // Grant read access to the ffmpeg cache repo (ECR-mirrored mwader/static-ffmpeg)
     backendBuild.addToRolePolicy(
@@ -305,6 +319,7 @@ export class BackendPipelineStack extends cdk.Stack {
       { name: props.selectionProcessor.functionName, imageKey: 'selectImage' },
       { name: props.videoProcessor.functionName, imageKey: 'videoImage' },
       { name: props.webhookHandler.functionName, imageKey: 'webhookImage' },
+      { name: props.oauthHandler.functionName, imageKey: 'oauthImage' },
     ];
 
     const deployProject = new codebuild.PipelineProject(this, 'DeployProject', {
@@ -358,6 +373,7 @@ export class BackendPipelineStack extends cdk.Stack {
             'export SELECT_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'selectImage\'])")',
             'export VIDEO_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'videoImage\'])")',
             'export WEBHOOK_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'webhookImage\'])")',
+            'export OAUTH_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'oauthImage\'])")',
 
             `echo "Updating ${props.apiHandler.functionName} (private)..." && aws lambda update-function-code --function-name ${props.apiHandler.functionName} --image-uri $API_IMAGE`,
             `echo "Updating ${props.enhancementProcessor.functionName} (public)..." && aws lambda update-function-code --function-name ${props.enhancementProcessor.functionName} --image-uri $ENHANCE_IMAGE`,
@@ -365,6 +381,7 @@ export class BackendPipelineStack extends cdk.Stack {
             `echo "Updating ${props.selectionProcessor.functionName} (private)..." && aws lambda update-function-code --function-name ${props.selectionProcessor.functionName} --image-uri $SELECT_IMAGE`,
             `echo "Updating ${props.videoProcessor.functionName} (public)..." && aws lambda update-function-code --function-name ${props.videoProcessor.functionName} --image-uri $VIDEO_IMAGE`,
             `echo "Updating ${props.webhookHandler.functionName} (private webhook)..." && aws lambda update-function-code --function-name ${props.webhookHandler.functionName} --image-uri $WEBHOOK_IMAGE`,
+            `echo "Updating ${props.oauthHandler.functionName} (private oauth)..." && aws lambda update-function-code --function-name ${props.oauthHandler.functionName} --image-uri $OAUTH_IMAGE`,
 
             `aws lambda wait function-updated --function-name ${props.apiHandler.functionName}`,
             `aws lambda wait function-updated --function-name ${props.enhancementProcessor.functionName}`,
@@ -372,6 +389,7 @@ export class BackendPipelineStack extends cdk.Stack {
             `aws lambda wait function-updated --function-name ${props.selectionProcessor.functionName}`,
             `aws lambda wait function-updated --function-name ${props.videoProcessor.functionName}`,
             `aws lambda wait function-updated --function-name ${props.webhookHandler.functionName}`,
+            `aws lambda wait function-updated --function-name ${props.oauthHandler.functionName}`,
 
             // Save successful build commit to SSM for conditional builds (DDR-047)
             'export FULL_COMMIT=$(python3 -c "import json; d=json.load(open(\'imageDetail.json\')); uri=d[\'apiImage\']; print(uri.split(\':\')[-1].split(\'-\')[-1])" 2>/dev/null || echo "")',
@@ -392,6 +410,7 @@ export class BackendPipelineStack extends cdk.Stack {
           props.enhancementProcessor.functionArn,
           props.videoProcessor.functionArn,
           props.webhookHandler.functionArn,
+          props.oauthHandler.functionArn,
         ],
       }),
     );
