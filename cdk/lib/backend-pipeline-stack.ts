@@ -195,6 +195,18 @@ export class BackendPipelineStack extends cdk.Stack {
     props.lightEcrRepo.grantPullPush(backendBuild);
     props.heavyEcrRepo.grantPullPush(backendBuild);
 
+    // Grant read access to the ffmpeg cache repo (ECR-mirrored mwader/static-ffmpeg)
+    backendBuild.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: [
+          'ecr:BatchGetImage',
+          'ecr:GetDownloadUrlForLayer',
+          'ecr:BatchCheckLayerAvailability',
+        ],
+        resources: [`arn:aws:ecr:${this.region}:${this.account}:repository/static-ffmpeg-cache`],
+      }),
+    );
+
     // Grant ECR auth token permissions (private + public)
     backendBuild.addToRolePolicy(
       new iam.PolicyStatement({
