@@ -98,6 +98,13 @@ export class FrontendStack extends cdk.Stack {
     // so we add the policy manually below.
     const s3Origin = origins.S3BucketOrigin.withOriginAccessControl(this.frontendBucket);
 
+    // Acknowledge CDK's imported-bucket OAC warning — we create the bucket policy
+    // manually via CfnBucketPolicy below to avoid the cross-stack cycle (DDR-045).
+    cdk.Annotations.of(this).acknowledgeWarning(
+      '@aws-cdk/aws-cloudfront-origins:updateImportedBucketPolicyOac',
+      'OAC bucket policy is managed manually via CfnBucketPolicy below (DDR-045)',
+    );
+
     // API Gateway origin: extract domain from endpoint URL (https://xxx.execute-api...).
     // CloudFront proxies /api/* to API Gateway so the SPA makes same-origin requests.
     // The x-origin-verify custom header ensures only CloudFront can reach the API (DDR-028 Problem 1).
