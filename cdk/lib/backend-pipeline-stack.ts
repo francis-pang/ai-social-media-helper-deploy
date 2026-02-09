@@ -141,37 +141,40 @@ export class BackendPipelineStack extends cdk.Stack {
               'echo "Building API Lambda (private light)..."',
               'docker build --build-arg CMD_TARGET=media-lambda -t $PRIVATE_LIGHT_URI:api-$COMMIT -t $PRIVATE_LIGHT_URI:api-latest -f cmd/media-lambda/Dockerfile.light .',
 
-              // --- ECR Public: Light images (generic, no ffmpeg) ---
-              // Build 2: Enhancement Lambda (generic Gemini passthrough)
-              'echo "Building Enhancement Lambda (public light)..."',
-              'docker build --build-arg CMD_TARGET=enhance-lambda -t $PUBLIC_LIGHT_URI:enhance-$COMMIT -t $PUBLIC_LIGHT_URI:enhance-latest -f cmd/media-lambda/Dockerfile.light .',
+              // --- Build 2: Enhancement Lambda (generic Gemini passthrough) ---
+              // Tagged for both ECR Private (Lambda consumption) and ECR Public (distribution)
+              'echo "Building Enhancement Lambda..."',
+              'docker build --build-arg CMD_TARGET=enhance-lambda -t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest -t $PUBLIC_LIGHT_URI:enhance-$COMMIT -t $PUBLIC_LIGHT_URI:enhance-latest -f cmd/media-lambda/Dockerfile.light .',
 
-              // --- ECR Public: Heavy images (generic, with ffmpeg) ---
-              // Build 3: Thumbnail Lambda (generic ffmpeg thumbnail extraction)
-              'echo "Building Thumbnail Lambda (public heavy)..."',
-              'docker build --build-arg CMD_TARGET=thumbnail-lambda -t $PUBLIC_HEAVY_URI:thumb-$COMMIT -t $PUBLIC_HEAVY_URI:thumb-latest -f cmd/media-lambda/Dockerfile.heavy .',
+              // --- Build 3: Thumbnail Lambda (generic ffmpeg thumbnail extraction) ---
+              'echo "Building Thumbnail Lambda..."',
+              'docker build --build-arg CMD_TARGET=thumbnail-lambda -t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest -t $PUBLIC_HEAVY_URI:thumb-$COMMIT -t $PUBLIC_HEAVY_URI:thumb-latest -f cmd/media-lambda/Dockerfile.heavy .',
 
-              // --- ECR Private: Heavy images (proprietary, with ffmpeg) ---
-              // Build 4: Selection Lambda (proprietary AI selection algorithms)
+              // --- Build 4: Selection Lambda (proprietary AI selection algorithms) ---
               'echo "Building Selection Lambda (private heavy)..."',
               'docker build --build-arg CMD_TARGET=selection-lambda -t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest -f cmd/media-lambda/Dockerfile.heavy .',
 
-              // --- ECR Public: Heavy images (generic, with ffmpeg) ---
-              // Build 5: Video Lambda (generic ffmpeg video processing)
-              'echo "Building Video Lambda (public heavy)..."',
-              'docker build --build-arg CMD_TARGET=video-lambda -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest -f cmd/media-lambda/Dockerfile.heavy .',
+              // --- Build 5: Video Lambda (generic ffmpeg video processing) ---
+              'echo "Building Video Lambda..."',
+              'docker build --build-arg CMD_TARGET=video-lambda -t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest -f cmd/media-lambda/Dockerfile.heavy .',
             ],
           },
           post_build: {
             commands: [
-              // Push ECR Private images
+              // Push ECR Private images (used by Lambda)
               'echo "Pushing private images..."',
               'docker push $PRIVATE_LIGHT_URI:api-$COMMIT',
               'docker push $PRIVATE_LIGHT_URI:api-latest',
+              'docker push $PRIVATE_LIGHT_URI:enhance-$COMMIT',
+              'docker push $PRIVATE_LIGHT_URI:enhance-latest',
               'docker push $PRIVATE_HEAVY_URI:select-$COMMIT',
               'docker push $PRIVATE_HEAVY_URI:select-latest',
+              'docker push $PRIVATE_HEAVY_URI:thumb-$COMMIT',
+              'docker push $PRIVATE_HEAVY_URI:thumb-latest',
+              'docker push $PRIVATE_HEAVY_URI:video-$COMMIT',
+              'docker push $PRIVATE_HEAVY_URI:video-latest',
 
-              // Push ECR Public images
+              // Push ECR Public images (for distribution, DDR-041)
               'echo "Pushing public images..."',
               'docker push $PUBLIC_LIGHT_URI:enhance-$COMMIT',
               'docker push $PUBLIC_LIGHT_URI:enhance-latest',
@@ -180,8 +183,8 @@ export class BackendPipelineStack extends cdk.Stack {
               'docker push $PUBLIC_HEAVY_URI:video-$COMMIT',
               'docker push $PUBLIC_HEAVY_URI:video-latest',
 
-              // Write image URIs for deploy stage
-              `echo '{"apiImage":"'$PRIVATE_LIGHT_URI:api-$COMMIT'","enhanceImage":"'$PUBLIC_LIGHT_URI:enhance-$COMMIT'","thumbImage":"'$PUBLIC_HEAVY_URI:thumb-$COMMIT'","selectImage":"'$PRIVATE_HEAVY_URI:select-$COMMIT'","videoImage":"'$PUBLIC_HEAVY_URI:video-$COMMIT'"}' > imageDetail.json`,
+              // Write image URIs for deploy stage — Lambda requires ECR Private URIs
+              `echo '{"apiImage":"'$PRIVATE_LIGHT_URI:api-$COMMIT'","enhanceImage":"'$PRIVATE_LIGHT_URI:enhance-$COMMIT'","thumbImage":"'$PRIVATE_HEAVY_URI:thumb-$COMMIT'","selectImage":"'$PRIVATE_HEAVY_URI:select-$COMMIT'","videoImage":"'$PRIVATE_HEAVY_URI:video-$COMMIT'"}' > imageDetail.json`,
             ],
           },
         },
@@ -319,7 +322,7 @@ export class BackendPipelineStack extends cdk.Stack {
     // Grant deploy project permissions for all Lambda updates
     deployProject.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ['lambda:UpdateFunctionCode', 'lambda:GetFunction'],
+        actions: ['lambda:UpdateFunctionCode', 'lambda:GetFunction', 'lambda:GetFunctionConfiguration'],
         resources: [
           props.apiHandler.functionArn,
           props.thumbnailProcessor.functionArn,
