@@ -183,17 +183,12 @@ export class BackendStack extends cdk.Stack {
       SSM_API_KEY_PARAM: '/ai-social-media/prod/gemini-api-key',
     };
 
-    // --- 1. API Lambda (DDR-035: 256 MB, 30s) ---
+    // --- 1. API Lambda (DDR-035: 256 MB, 30s, DDR-041: ECR Private light) ---
     // Handles HTTP requests via API Gateway. Fast responses only.
     // For long-running work: starts Step Functions executions.
-    this.apiHandler = new lambda.Function(this, 'ApiHandler', {
+    this.apiHandler = new lambda.DockerImageFunction(this, 'ApiHandler', {
       functionName: 'AiSocialMediaApiHandler',
-      runtime: lambda.Runtime.PROVIDED_AL2023,
-      handler: 'bootstrap',
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, '../.build/lambda'),
-        { exclude: ['Dockerfile*'] },
-      ),
+      code: lambda.DockerImageCode.fromEcr(this.lightEcrRepo, { tagOrDigest: 'api-latest' }),
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
       ephemeralStorageSize: cdk.Size.mebibytes(512),
@@ -206,68 +201,51 @@ export class BackendStack extends cdk.Stack {
       },
     });
 
-    // --- 2. Thumbnail Lambda (DDR-035: 512 MB, 2 min) ---
+    // --- 2. Thumbnail Lambda (DDR-035: 512 MB, 2 min, DDR-041: ECR Public heavy) ---
     // Invoked by Step Functions Map state — one invocation per media file.
     // Generates 400px thumbnail (image: Go resize, video: ffmpeg frame).
-    this.thumbnailProcessor = new lambda.Function(this, 'ThumbnailProcessor', {
+    this.thumbnailProcessor = new lambda.DockerImageFunction(this, 'ThumbnailProcessor', {
       functionName: 'AiSocialMediaThumbnailProcessor',
-      runtime: lambda.Runtime.PROVIDED_AL2023,
-      handler: 'bootstrap',
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, '../.build/lambda'),
-        { exclude: ['Dockerfile*'] },
-      ),
+      // Uses select-latest as initial placeholder; pipeline updates to correct image
+      code: lambda.DockerImageCode.fromEcr(this.heavyEcrRepo, { tagOrDigest: 'select-latest' }),
       timeout: cdk.Duration.minutes(2),
       memorySize: 512,
       ephemeralStorageSize: cdk.Size.mebibytes(2048),
       environment: sharedEnv,
     });
 
-    // --- 3. Selection Lambda (DDR-035: 4 GB, 15 min) ---
+    // --- 3. Selection Lambda (DDR-035: 4 GB, 15 min, DDR-041: ECR Private heavy) ---
     // Invoked by Step Functions after thumbnails are generated.
     // Downloads all thumbnails, sends to Gemini for AI selection.
-    this.selectionProcessor = new lambda.Function(this, 'SelectionProcessor', {
+    this.selectionProcessor = new lambda.DockerImageFunction(this, 'SelectionProcessor', {
       functionName: 'AiSocialMediaSelectionProcessor',
-      runtime: lambda.Runtime.PROVIDED_AL2023,
-      handler: 'bootstrap',
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, '../.build/lambda'),
-        { exclude: ['Dockerfile*'] },
-      ),
+      code: lambda.DockerImageCode.fromEcr(this.heavyEcrRepo, { tagOrDigest: 'select-latest' }),
       timeout: cdk.Duration.minutes(15),
       memorySize: 4096,
       ephemeralStorageSize: cdk.Size.mebibytes(4096),
       environment: sharedEnv,
     });
 
-    // --- 4. Enhancement Lambda (DDR-035: 2 GB, 5 min) ---
+    // --- 4. Enhancement Lambda (DDR-035: 2 GB, 5 min, DDR-041: ECR Public light) ---
     // Invoked by Step Functions Map state — one invocation per photo.
     // Sends photo to Gemini for AI image editing.
-    this.enhancementProcessor = new lambda.Function(this, 'EnhancementProcessor', {
+    this.enhancementProcessor = new lambda.DockerImageFunction(this, 'EnhancementProcessor', {
       functionName: 'AiSocialMediaEnhancementProcessor',
-      runtime: lambda.Runtime.PROVIDED_AL2023,
-      handler: 'bootstrap',
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, '../.build/lambda'),
-        { exclude: ['Dockerfile*'] },
-      ),
+      // Uses api-latest as initial placeholder; pipeline updates to correct image
+      code: lambda.DockerImageCode.fromEcr(this.lightEcrRepo, { tagOrDigest: 'api-latest' }),
       timeout: cdk.Duration.minutes(5),
       memorySize: 2048,
       ephemeralStorageSize: cdk.Size.mebibytes(2048),
       environment: sharedEnv,
     });
 
-    // --- 5. Video Processing Lambda (DDR-035: 4 GB, 15 min) ---
+    // --- 5. Video Processing Lambda (DDR-035: 4 GB, 15 min, DDR-041: ECR Public heavy) ---
     // Invoked by Step Functions Map state — one invocation per video.
     // Downloads video, runs ffmpeg enhancement, uploads result.
-    this.videoProcessor = new lambda.Function(this, 'VideoProcessor', {
+    this.videoProcessor = new lambda.DockerImageFunction(this, 'VideoProcessor', {
       functionName: 'AiSocialMediaVideoProcessor',
-      runtime: lambda.Runtime.PROVIDED_AL2023,
-      handler: 'bootstrap',
-      code: lambda.Code.fromAsset(
-        path.join(__dirname, '../.build/lambda'),
-        { exclude: ['Dockerfile*'] },
-      ),
+      // Uses select-latest as initial placeholder; pipeline updates to correct image
+      code: lambda.DockerImageCode.fromEcr(this.heavyEcrRepo, { tagOrDigest: 'select-latest' }),
       timeout: cdk.Duration.minutes(15),
       memorySize: 4096,
       ephemeralStorageSize: cdk.Size.mebibytes(10240), // 10 GB for large video files
