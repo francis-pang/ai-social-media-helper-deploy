@@ -59,6 +59,7 @@ export class BackendStack extends cdk.Stack {
 
   // Lambda functions
   public readonly apiHandler: lambda.Function;
+  public readonly workerProcessor: lambda.Function;
   public readonly thumbnailProcessor: lambda.Function;
   public readonly selectionProcessor: lambda.Function;
   public readonly enhancementProcessor: lambda.Function;
@@ -154,9 +155,22 @@ export class BackendStack extends cdk.Stack {
       },
     });
 
-    // --- 2. Thumbnail Lambda (DDR-035: 512 MB, 2 min, DDR-041: ECR Public heavy) ---
-    // Invoked by Step Functions Map state — one invocation per media file.
-    // Generates 400px thumbnail (image: Go resize, video: ffmpeg frame).
+    // --- 2. Worker Lambda (DDR-050: 2 GB, 10 min, ECR Private light) ---
+    // Handles async job processing: triage, description, download, publish.
+    // Invoked asynchronously by the API Lambda via lambda:Invoke (Event type).
+    this.workerProcessor = new lambda.DockerImageFunction(this, 'WorkerProcessor', {
+      code: lambda.DockerImageCode.fromEcr(this.lightEcrRepo, { tagOrDigest: 'api-latest' }),
+      timeout: cdk.Duration.minutes(10),
+      memorySize: 2048,
+      ephemeralStorageSize: cdk.Size.mebibytes(2048),
+      environment: {
+        ...sharedEnv,
+        SSM_INSTAGRAM_TOKEN_PARAM: '/ai-social-media/prod/instagram-access-token',
+        SSM_INSTAGRAM_USER_ID_PARAM: '/ai-social-media/prod/instagram-user-id',
+      },
+    });
+
+    // --- 3. Thumbnail Lambda (DDR-035: 512 MB, 2 min, DDR-041: ECR Public heavy) ---
     this.thumbnailProcessor = new lambda.DockerImageFunction(this, 'ThumbnailProcessor', {
       // Uses select-latest as initial placeholder; pipeline updates to correct image
       code: lambda.DockerImageCode.fromEcr(this.heavyEcrRepo, { tagOrDigest: 'select-latest' }),
@@ -206,6 +220,7 @@ export class BackendStack extends cdk.Stack {
     // =========================================================================
     const allLambdas = [
       this.apiHandler,
+      this.workerProcessor,
       this.thumbnailProcessor,
       this.selectionProcessor,
       this.enhancementProcessor,
@@ -234,14 +249,24 @@ export class BackendStack extends cdk.Stack {
       );
     }
 
-    // API Lambda only: SSM read for Instagram credentials
+    // API + Worker Lambda: SSM read for Instagram credentials
+    for (const fn of [this.apiHandler, this.workerProcessor]) {
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ['ssm:GetParameter'],
+          resources: [
+            `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/instagram-access-token`,
+            `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/instagram-user-id`,
+          ],
+        }),
+      );
+    }
+
+    // API Lambda: permission to invoke Worker Lambda asynchronously (DDR-050)
     this.apiHandler.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ['ssm:GetParameter'],
-        resources: [
-          `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/instagram-access-token`,
-          `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/instagram-user-id`,
-        ],
+        actions: ['lambda:InvokeFunction'],
+        resources: [this.workerProcessor.functionArn],
       }),
     );
 
@@ -359,7 +384,7 @@ export class BackendStack extends cdk.Stack {
       }),
     );
 
-    // Add state machine ARNs to API Lambda environment
+    // Add state machine ARNs and Worker Lambda ARN to API Lambda environment
     this.apiHandler.addEnvironment(
       'SELECTION_STATE_MACHINE_ARN',
       this.selectionPipeline.stateMachineArn,
@@ -367,6 +392,10 @@ export class BackendStack extends cdk.Stack {
     this.apiHandler.addEnvironment(
       'ENHANCEMENT_STATE_MACHINE_ARN',
       this.enhancementPipeline.stateMachineArn,
+    );
+    this.apiHandler.addEnvironment(
+      'WORKER_LAMBDA_ARN',
+      this.workerProcessor.functionArn,
     );
 
     // =========================================================================
@@ -436,6 +465,11 @@ export class BackendStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'ApiLambdaName', {
       value: this.apiHandler.functionName,
       description: 'API Lambda function name',
+    });
+
+    new cdk.CfnOutput(this, 'WorkerLambdaName', {
+      value: this.workerProcessor.functionName,
+      description: 'Worker Lambda function name (DDR-050)',
     });
 
     // ECR repo outputs are in RegistryStack (DDR-046)

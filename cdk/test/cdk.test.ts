@@ -43,6 +43,7 @@ describe('AiSocialMedia Infrastructure', () => {
   const webhook = new WebhookStack(app, 'TestWebhook', {
     env,
     webhookEcrRepo: registry.webhookEcrRepo,
+    oauthEcrRepo: registry.oauthEcrRepo,
   });
   const backendPipeline = new BackendPipelineStack(app, 'TestBackendPipeline', {
     env,
@@ -51,12 +52,15 @@ describe('AiSocialMedia Infrastructure', () => {
     publicLightRepoName: 'ai-social-media-lambda-light',
     publicHeavyRepoName: 'ai-social-media-lambda-heavy',
     apiHandler: backend.apiHandler,
+    workerProcessor: backend.workerProcessor,
     thumbnailProcessor: backend.thumbnailProcessor,
     selectionProcessor: backend.selectionProcessor,
     enhancementProcessor: backend.enhancementProcessor,
     videoProcessor: backend.videoProcessor,
     webhookEcrRepo: registry.webhookEcrRepo,
     webhookHandler: webhook.webhookHandler,
+    oauthEcrRepo: registry.oauthEcrRepo,
+    oauthHandler: webhook.oauthHandler,
     codeStarConnectionArn: 'arn:aws:codeconnections:us-east-1:123456789012:connection/test-connection-id',
     artifactBucket: storage.beArtifactBucket,
   });
@@ -123,7 +127,7 @@ describe('AiSocialMedia Infrastructure', () => {
   // RegistryStack (DDR-046: all ECR repos in one stack, no Lambdas)
   // =========================================================================
 
-  test('RegistryStack creates 3 ECR Private repositories (DDR-046)', () => {
+  test('RegistryStack creates 4 ECR Private repositories (DDR-046, DDR-048)', () => {
     const template = Template.fromStack(registry);
 
     template.hasResourceProperties('AWS::ECR::Repository', {
@@ -138,7 +142,11 @@ describe('AiSocialMedia Infrastructure', () => {
       RepositoryName: 'ai-social-media-webhook',
     });
 
-    template.resourceCountIs('AWS::ECR::Repository', 3);
+    template.hasResourceProperties('AWS::ECR::Repository', {
+      RepositoryName: 'ai-social-media-oauth',
+    });
+
+    template.resourceCountIs('AWS::ECR::Repository', 4);
   });
 
   test('RegistryStack creates 2 ECR Public repositories (DDR-046)', () => {
@@ -178,7 +186,7 @@ describe('AiSocialMedia Infrastructure', () => {
   // BackendStack
   // =========================================================================
 
-  test('BackendStack creates 5 Lambda functions', () => {
+  test('BackendStack creates 6 Lambda functions', () => {
     const template = Template.fromStack(backend);
 
     template.hasResourceProperties('AWS::Lambda::Function', {
@@ -201,8 +209,14 @@ describe('AiSocialMedia Infrastructure', () => {
       Timeout: 300,
     });
 
-    // Total: 5 Lambda functions
-    template.resourceCountIs('AWS::Lambda::Function', 5);
+    // Worker Lambda (DDR-050: async job dispatch)
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      MemorySize: 2048,
+      Timeout: 600,
+    });
+
+    // Total: 6 Lambda functions (api, worker, thumbnail, selection, enhancement, video)
+    template.resourceCountIs('AWS::Lambda::Function', 6);
   });
 
   test('BackendStack creates 2 Step Functions state machines', () => {

@@ -115,6 +115,7 @@ const backendPipeline = new BackendPipelineStack(app, 'AiSocialMediaBackendPipel
   publicLightRepoName: registry.publicLightEcrRepo.repositoryName!,
   publicHeavyRepoName: registry.publicHeavyEcrRepo.repositoryName!,
   apiHandler: backend.apiHandler,
+  workerProcessor: backend.workerProcessor,
   thumbnailProcessor: backend.thumbnailProcessor,
   selectionProcessor: backend.selectionProcessor,
   enhancementProcessor: backend.enhancementProcessor,
