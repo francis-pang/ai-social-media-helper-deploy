@@ -2,49 +2,70 @@ import * as cdk from 'aws-cdk-lib/core';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as authorizers from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import * as integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
+import * as tasks from 'aws-cdk-lib/aws-stepfunctions-tasks';
 import * as path from 'path';
 import { Construct } from 'constructs';
 
 export interface BackendStackProps extends cdk.StackProps {
   /** The S3 bucket for media uploads (from StorageStack) */
   mediaBucket: s3.IBucket;
+  /** The DynamoDB table for session state (from StorageStack) */
+  sessionsTable: dynamodb.ITable;
   /** CloudFront distribution domain for CORS lockdown (DDR-028) */
   cloudFrontDomain?: string;
 }
 
 /**
- * BackendStack creates Lambda + API Gateway HTTP API for the backend.
+ * BackendStack creates the multi-Lambda backend infrastructure (DDR-035).
  *
- * Security hardening (DDR-028):
+ * Components:
+ * - 5 Lambda functions (API, Thumbnail, Selection, Enhancement, Video)
+ * - 2 ECR repositories (light: no ffmpeg, heavy: with ffmpeg)
+ * - 2 Step Functions state machines (SelectionPipeline, EnhancementPipeline)
+ * - API Gateway HTTP API with Cognito JWT auth
+ * - Cognito User Pool (no public signup)
+ *
+ * Security (DDR-028):
  * - Cognito User Pool with JWT authorizer (no public signup)
- * - Origin-verify shared secret (CloudFront → Lambda)
+ * - Origin-verify shared secret (CloudFront -> Lambda)
  * - CORS locked to CloudFront domain
  * - API Gateway default throttling (100 req/s burst, 50 req/s steady)
- *
- * Deploys a container image Lambda (DDR-027) that bundles the Go binary
- * alongside ffmpeg and ffprobe for video processing.
- *
- * Lambda execution role has:
- * - s3:GetObject, s3:PutObject, s3:DeleteObject, s3:ListBucket on the media bucket
- * - ssm:GetParameter for reading the Gemini API key from Parameter Store
- * - CloudWatch Logs access (automatic via CDK)
+ * - Per-Lambda IAM with least privilege
  */
 export class BackendStack extends cdk.Stack {
+  // API Gateway + Auth
   public readonly httpApi: apigwv2.HttpApi;
-  public readonly handler: lambda.Function;
-  public readonly ecrRepository: ecr.Repository;
   public readonly userPool: cognito.UserPool;
   public readonly userPoolClient: cognito.UserPoolClient;
+
+  // Lambda functions
+  public readonly apiHandler: lambda.Function;
+  public readonly thumbnailProcessor: lambda.Function;
+  public readonly selectionProcessor: lambda.Function;
+  public readonly enhancementProcessor: lambda.Function;
+  public readonly videoProcessor: lambda.Function;
+
+  // ECR repositories
+  public readonly lightEcrRepo: ecr.Repository;
+  public readonly heavyEcrRepo: ecr.Repository;
+
+  // Step Functions
+  public readonly selectionPipeline: sfn.StateMachine;
+  public readonly enhancementPipeline: sfn.StateMachine;
 
   constructor(scope: Construct, id: string, props: BackendStackProps) {
     super(scope, id, props);
 
-    // --- Cognito User Pool (DDR-028 Problem 2) ---
+    // =========================================================================
+    // Cognito User Pool (DDR-028 Problem 2)
+    // =========================================================================
     // Self-signup disabled — the sole user is provisioned via AWS CLI:
     //   aws cognito-idp admin-create-user --user-pool-id <id> --username <email>
     //   aws cognito-idp admin-set-user-password --user-pool-id <id> --username <email> --password <pw> --permanent
@@ -75,74 +96,324 @@ export class BackendStack extends cdk.Stack {
       refreshTokenValidity: cdk.Duration.days(7),
     });
 
-    // --- ECR Repository ---
-    // Stores container images for the Lambda function.
-    // Lifecycle rule keeps only the last 5 images to control storage costs.
-    this.ecrRepository = new ecr.Repository(this, 'LambdaImageRepo', {
-      repositoryName: 'ai-social-media-lambda',
+    // =========================================================================
+    // ECR Repositories (DDR-035)
+    // =========================================================================
+    // Two repos maximize Docker layer deduplication:
+    // - Light: API + Enhancement images share AL2023 base layer
+    // - Heavy: Thumbnail + Selection + Video share AL2023 base + ffmpeg layers
+    this.lightEcrRepo = new ecr.Repository(this, 'LightImageRepo', {
+      repositoryName: 'ai-social-media-lambda-light',
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
       lifecycleRules: [
         {
-          maxImageCount: 5,
-          description: 'Keep only the last 5 images',
+          maxImageCount: 10, // 5 tags x 2 Lambda functions
+          description: 'Keep only the last 10 images (5 per Lambda)',
         },
       ],
     });
 
-    // --- Origin Verify Secret (DDR-028 Problem 1) ---
-    // A shared secret passed by CloudFront via custom origin header,
-    // verified by Lambda middleware to block direct API Gateway access.
-    // Generate once and store in SSM for rotation if needed.
+    this.heavyEcrRepo = new ecr.Repository(this, 'HeavyImageRepo', {
+      repositoryName: 'ai-social-media-lambda-heavy',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      emptyOnDelete: true,
+      lifecycleRules: [
+        {
+          maxImageCount: 15, // 5 tags x 3 Lambda functions
+          description: 'Keep only the last 15 images (5 per Lambda)',
+        },
+      ],
+    });
+
+    // =========================================================================
+    // Origin Verify Secret (DDR-028 Problem 1)
+    // =========================================================================
     const originVerifySecret = cdk.Fn.select(2, cdk.Fn.split('/', this.stackId));
 
-    // --- Lambda Function ---
-    // CDK deploys the Go binary as a zip-based function (provided.al2023).
-    // The CodePipeline (PipelineStack) builds the container image with ffmpeg/ffprobe
-    // and updates the Lambda to use it. This avoids requiring Docker locally for
+    // =========================================================================
+    // Lambda Functions (DDR-035)
+    // =========================================================================
+    // All Lambdas use zip-based deployment initially. The CodePipeline
+    // (BackendPipelineStack) builds container images and updates each Lambda
+    // to use its specific image. This avoids requiring Docker locally for
     // CDK deploys while letting the pipeline handle the container image lifecycle.
-    this.handler = new lambda.Function(this, 'ApiHandler', {
+
+    // Shared environment variables for all processing Lambdas
+    const sharedEnv = {
+      MEDIA_BUCKET_NAME: props.mediaBucket.bucketName,
+      DYNAMO_TABLE_NAME: props.sessionsTable.tableName,
+      SSM_API_KEY_PARAM: '/ai-social-media/prod/gemini-api-key',
+    };
+
+    // --- 1. API Lambda (DDR-035: 256 MB, 30s) ---
+    // Handles HTTP requests via API Gateway. Fast responses only.
+    // For long-running work: starts Step Functions executions.
+    this.apiHandler = new lambda.Function(this, 'ApiHandler', {
       functionName: 'AiSocialMediaApiHandler',
       runtime: lambda.Runtime.PROVIDED_AL2023,
       handler: 'bootstrap',
       code: lambda.Code.fromAsset(
         path.join(__dirname, '../.build/lambda'),
-        { exclude: ['Dockerfile'] },
+        { exclude: ['Dockerfile*'] },
       ),
-      timeout: cdk.Duration.minutes(5), // Triage can take several minutes
-      memorySize: 2048, // ffmpeg needs CPU; Lambda allocates CPU proportional to memory (DDR-027)
-      ephemeralStorageSize: cdk.Size.mebibytes(2048), // /tmp for S3 downloads + video compression
+      timeout: cdk.Duration.seconds(30),
+      memorySize: 256,
+      ephemeralStorageSize: cdk.Size.mebibytes(512),
       environment: {
-        MEDIA_BUCKET_NAME: props.mediaBucket.bucketName,
-        SSM_API_KEY_PARAM: '/ai-social-media/prod/gemini-api-key',
+        ...sharedEnv,
         ORIGIN_VERIFY_SECRET: originVerifySecret,
+        SSM_INSTAGRAM_TOKEN_PARAM: '/ai-social-media/prod/instagram-access-token',
+        SSM_INSTAGRAM_USER_ID_PARAM: '/ai-social-media/prod/instagram-user-id',
+        // State machine ARNs set after state machines are created (below)
       },
     });
 
-    // Grant Lambda read/write/delete + list access to the media bucket
-    props.mediaBucket.grantReadWrite(this.handler);
-    props.mediaBucket.grantDelete(this.handler);
+    // --- 2. Thumbnail Lambda (DDR-035: 512 MB, 2 min) ---
+    // Invoked by Step Functions Map state — one invocation per media file.
+    // Generates 400px thumbnail (image: Go resize, video: ffmpeg frame).
+    this.thumbnailProcessor = new lambda.Function(this, 'ThumbnailProcessor', {
+      functionName: 'AiSocialMediaThumbnailProcessor',
+      runtime: lambda.Runtime.PROVIDED_AL2023,
+      handler: 'bootstrap',
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, '../.build/lambda'),
+        { exclude: ['Dockerfile*'] },
+      ),
+      timeout: cdk.Duration.minutes(2),
+      memorySize: 512,
+      ephemeralStorageSize: cdk.Size.mebibytes(2048),
+      environment: sharedEnv,
+    });
 
-    // Grant Lambda read access to SSM Parameter Store for Gemini API key
-    this.handler.addToRolePolicy(
+    // --- 3. Selection Lambda (DDR-035: 4 GB, 15 min) ---
+    // Invoked by Step Functions after thumbnails are generated.
+    // Downloads all thumbnails, sends to Gemini for AI selection.
+    this.selectionProcessor = new lambda.Function(this, 'SelectionProcessor', {
+      functionName: 'AiSocialMediaSelectionProcessor',
+      runtime: lambda.Runtime.PROVIDED_AL2023,
+      handler: 'bootstrap',
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, '../.build/lambda'),
+        { exclude: ['Dockerfile*'] },
+      ),
+      timeout: cdk.Duration.minutes(15),
+      memorySize: 4096,
+      ephemeralStorageSize: cdk.Size.mebibytes(4096),
+      environment: sharedEnv,
+    });
+
+    // --- 4. Enhancement Lambda (DDR-035: 2 GB, 5 min) ---
+    // Invoked by Step Functions Map state — one invocation per photo.
+    // Sends photo to Gemini for AI image editing.
+    this.enhancementProcessor = new lambda.Function(this, 'EnhancementProcessor', {
+      functionName: 'AiSocialMediaEnhancementProcessor',
+      runtime: lambda.Runtime.PROVIDED_AL2023,
+      handler: 'bootstrap',
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, '../.build/lambda'),
+        { exclude: ['Dockerfile*'] },
+      ),
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 2048,
+      ephemeralStorageSize: cdk.Size.mebibytes(2048),
+      environment: sharedEnv,
+    });
+
+    // --- 5. Video Processing Lambda (DDR-035: 4 GB, 15 min) ---
+    // Invoked by Step Functions Map state — one invocation per video.
+    // Downloads video, runs ffmpeg enhancement, uploads result.
+    this.videoProcessor = new lambda.Function(this, 'VideoProcessor', {
+      functionName: 'AiSocialMediaVideoProcessor',
+      runtime: lambda.Runtime.PROVIDED_AL2023,
+      handler: 'bootstrap',
+      code: lambda.Code.fromAsset(
+        path.join(__dirname, '../.build/lambda'),
+        { exclude: ['Dockerfile*'] },
+      ),
+      timeout: cdk.Duration.minutes(15),
+      memorySize: 4096,
+      ephemeralStorageSize: cdk.Size.mebibytes(10240), // 10 GB for large video files
+      environment: sharedEnv,
+    });
+
+    // =========================================================================
+    // IAM Permissions (DDR-035: least privilege per Lambda)
+    // =========================================================================
+    const allLambdas = [
+      this.apiHandler,
+      this.thumbnailProcessor,
+      this.selectionProcessor,
+      this.enhancementProcessor,
+      this.videoProcessor,
+    ];
+
+    // All Lambdas: S3 read/write/delete + list on media bucket
+    for (const fn of allLambdas) {
+      props.mediaBucket.grantReadWrite(fn);
+      props.mediaBucket.grantDelete(fn);
+    }
+
+    // All Lambdas: DynamoDB CRUD on sessions table
+    for (const fn of allLambdas) {
+      props.sessionsTable.grantReadWriteData(fn);
+    }
+
+    // All Lambdas: SSM read for Gemini API key
+    const geminiKeyArn = `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/gemini-api-key`;
+    for (const fn of allLambdas) {
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ['ssm:GetParameter'],
+          resources: [geminiKeyArn],
+        }),
+      );
+    }
+
+    // API Lambda only: SSM read for Instagram credentials
+    this.apiHandler.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['ssm:GetParameter'],
         resources: [
-          `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/gemini-api-key`,
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/instagram-access-token`,
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/instagram-user-id`,
         ],
       }),
     );
 
-    // --- JWT Authorizer (DDR-028 Problem 2) ---
+    // =========================================================================
+    // Step Functions State Machines (DDR-035)
+    // =========================================================================
+
+    // --- Selection Pipeline ---
+    // Map: generate thumbnails (parallel, per file) -> Selection Lambda (Gemini AI)
+    const generateThumbnails = new tasks.LambdaInvoke(this, 'GenerateThumbnails', {
+      lambdaFunction: this.thumbnailProcessor,
+      outputPath: '$.Payload',
+      retryOnServiceExceptions: true,
+    });
+    generateThumbnails.addRetry({
+      errors: ['States.ALL'],
+      maxAttempts: 2,
+      backoffRate: 2,
+    });
+
+    const thumbnailMap = new sfn.Map(this, 'ThumbnailMap', {
+      maxConcurrency: 20,
+      itemsPath: '$.mediaKeys',
+      resultPath: '$.thumbnailResults',
+      itemSelector: {
+        'sessionId.$': '$.sessionId',
+        'mediaKey.$': '$$.Map.Item.Value',
+      },
+    });
+    thumbnailMap.itemProcessor(generateThumbnails);
+
+    const runSelection = new tasks.LambdaInvoke(this, 'RunSelection', {
+      lambdaFunction: this.selectionProcessor,
+      outputPath: '$.Payload',
+      retryOnServiceExceptions: true,
+    });
+    runSelection.addRetry({
+      errors: ['States.ALL'],
+      maxAttempts: 1,
+    });
+
+    const selectionDefinition = thumbnailMap.next(runSelection);
+
+    this.selectionPipeline = new sfn.StateMachine(this, 'SelectionPipeline', {
+      stateMachineName: 'AiSocialMediaSelectionPipeline',
+      definitionBody: sfn.DefinitionBody.fromChainable(selectionDefinition),
+      timeout: cdk.Duration.minutes(30),
+    });
+
+    // --- Enhancement Pipeline ---
+    // Parallel: (Map: enhance photos) + (Map: process videos)
+    const enhancePhoto = new tasks.LambdaInvoke(this, 'EnhancePhoto', {
+      lambdaFunction: this.enhancementProcessor,
+      outputPath: '$.Payload',
+      retryOnServiceExceptions: true,
+    });
+    enhancePhoto.addRetry({
+      errors: ['States.ALL'],
+      maxAttempts: 2,
+      backoffRate: 2,
+    });
+
+    const photoMap = new sfn.Map(this, 'PhotoEnhancementMap', {
+      maxConcurrency: 10,
+      itemsPath: '$.photos',
+      itemSelector: {
+        'sessionId.$': '$.sessionId',
+        'jobId.$': '$.jobId',
+        'mediaKey.$': '$$.Map.Item.Value',
+      },
+    });
+    photoMap.itemProcessor(enhancePhoto);
+
+    const processVideo = new tasks.LambdaInvoke(this, 'ProcessVideo', {
+      lambdaFunction: this.videoProcessor,
+      outputPath: '$.Payload',
+      retryOnServiceExceptions: true,
+    });
+    processVideo.addRetry({
+      errors: ['States.ALL'],
+      maxAttempts: 1,
+    });
+
+    const videoMap = new sfn.Map(this, 'VideoProcessingMap', {
+      maxConcurrency: 5,
+      itemsPath: '$.videos',
+      itemSelector: {
+        'sessionId.$': '$.sessionId',
+        'jobId.$': '$.jobId',
+        'mediaKey.$': '$$.Map.Item.Value',
+      },
+    });
+    videoMap.itemProcessor(processVideo);
+
+    const parallelEnhance = new sfn.Parallel(this, 'ParallelEnhance', {
+      resultPath: '$.enhancementResults',
+    });
+    parallelEnhance.branch(photoMap);
+    parallelEnhance.branch(videoMap);
+
+    this.enhancementPipeline = new sfn.StateMachine(this, 'EnhancementPipeline', {
+      stateMachineName: 'AiSocialMediaEnhancementPipeline',
+      definitionBody: sfn.DefinitionBody.fromChainable(parallelEnhance),
+      timeout: cdk.Duration.minutes(30),
+    });
+
+    // API Lambda: permission to start both state machines
+    this.apiHandler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['states:StartExecution'],
+        resources: [
+          this.selectionPipeline.stateMachineArn,
+          this.enhancementPipeline.stateMachineArn,
+        ],
+      }),
+    );
+
+    // Add state machine ARNs to API Lambda environment
+    this.apiHandler.addEnvironment(
+      'SELECTION_STATE_MACHINE_ARN',
+      this.selectionPipeline.stateMachineArn,
+    );
+    this.apiHandler.addEnvironment(
+      'ENHANCEMENT_STATE_MACHINE_ARN',
+      this.enhancementPipeline.stateMachineArn,
+    );
+
+    // =========================================================================
+    // API Gateway HTTP API (DDR-028: CORS lockdown + throttling)
+    // =========================================================================
     const issuer = this.userPool.userPoolProviderUrl;
     const jwtAuthorizer = new authorizers.HttpJwtAuthorizer('CognitoAuthorizer', issuer, {
       jwtAudience: [this.userPoolClient.userPoolClientId],
       identitySource: ['$request.header.Authorization'],
     });
 
-    // --- API Gateway HTTP API (DDR-028: CORS lockdown + throttling) ---
-    // CORS locked to CloudFront domain. Direct API Gateway access is rejected
-    // by the origin-verify middleware in Lambda anyway, but defense-in-depth.
     const allowedOrigins = props.cloudFrontDomain
       ? [`https://${props.cloudFrontDomain}`]
       : ['*']; // Fallback for initial deploy before CloudFront domain is known
@@ -161,9 +432,7 @@ export class BackendStack extends cdk.Stack {
       },
     });
 
-    // --- API Gateway Throttling (DDR-028 Problem 10) ---
-    // Default stage throttling: 100 burst, 50 steady-state req/s.
-    // Free — built into API Gateway. WAF deferred per DDR-028.
+    // API Gateway throttling (DDR-028 Problem 10)
     const cfnStage = this.httpApi.defaultStage?.node.defaultChild as cdk.CfnResource;
     if (cfnStage) {
       cfnStage.addPropertyOverride('DefaultRouteSettings', {
@@ -172,10 +441,10 @@ export class BackendStack extends cdk.Stack {
       });
     }
 
-    // Route all /api/* requests to the Lambda function with JWT auth
+    // Route all /api/* requests to the API Lambda with JWT auth
     const lambdaIntegration = new integrations.HttpLambdaIntegration(
       'LambdaIntegration',
-      this.handler,
+      this.apiHandler,
     );
 
     this.httpApi.addRoutes({
@@ -192,25 +461,37 @@ export class BackendStack extends cdk.Stack {
       integration: lambdaIntegration,
     });
 
-    // --- Outputs ---
+    // =========================================================================
+    // Outputs
+    // =========================================================================
     new cdk.CfnOutput(this, 'ApiUrl', {
       value: this.httpApi.apiEndpoint,
       description: 'API Gateway HTTP API endpoint URL',
     });
 
-    new cdk.CfnOutput(this, 'LambdaFunctionName', {
-      value: this.handler.functionName,
-      description: 'Lambda function name',
+    new cdk.CfnOutput(this, 'ApiLambdaName', {
+      value: this.apiHandler.functionName,
+      description: 'API Lambda function name',
     });
 
-    new cdk.CfnOutput(this, 'LambdaFunctionArn', {
-      value: this.handler.functionArn,
-      description: 'Lambda function ARN',
+    new cdk.CfnOutput(this, 'LightEcrRepoUri', {
+      value: this.lightEcrRepo.repositoryUri,
+      description: 'ECR repository URI for light Lambda images (no ffmpeg)',
     });
 
-    new cdk.CfnOutput(this, 'EcrRepositoryUri', {
-      value: this.ecrRepository.repositoryUri,
-      description: 'ECR repository URI for Lambda container images',
+    new cdk.CfnOutput(this, 'HeavyEcrRepoUri', {
+      value: this.heavyEcrRepo.repositoryUri,
+      description: 'ECR repository URI for heavy Lambda images (with ffmpeg)',
+    });
+
+    new cdk.CfnOutput(this, 'SelectionPipelineArn', {
+      value: this.selectionPipeline.stateMachineArn,
+      description: 'Selection Pipeline Step Functions ARN',
+    });
+
+    new cdk.CfnOutput(this, 'EnhancementPipelineArn', {
+      value: this.enhancementPipeline.stateMachineArn,
+      description: 'Enhancement Pipeline Step Functions ARN',
     });
 
     new cdk.CfnOutput(this, 'UserPoolId', {
