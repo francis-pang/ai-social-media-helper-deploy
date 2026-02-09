@@ -142,23 +142,24 @@ export class BackendStack extends cdk.Stack {
     });
 
     // --- ECR Public (generic, non-proprietary code) ---
+    // CfnPublicRepository uses CloudFormation PascalCase for RepositoryCatalogData
     this.publicLightEcrRepo = new ecr.CfnPublicRepository(this, 'PublicLightImageRepo', {
       repositoryName: 'ai-social-media-lambda-light',
       repositoryCatalogData: {
-        usageText: 'Generic Lambda images (no ffmpeg) for AI social media helper.',
-        aboutText: 'Light Lambda container images built on AL2023. Contains Go binaries without ffmpeg.',
-        operatingSystems: ['Linux'],
-        architectures: ['x86-64'],
+        UsageText: 'Generic Lambda images (no ffmpeg) for AI social media helper.',
+        AboutText: 'Light Lambda container images built on AL2023. Contains Go binaries without ffmpeg.',
+        OperatingSystems: ['Linux'],
+        Architectures: ['x86-64'],
       },
     });
 
     this.publicHeavyEcrRepo = new ecr.CfnPublicRepository(this, 'PublicHeavyImageRepo', {
       repositoryName: 'ai-social-media-lambda-heavy',
       repositoryCatalogData: {
-        usageText: 'Generic Lambda images (with ffmpeg) for AI social media helper.',
-        aboutText: 'Heavy Lambda container images built on AL2023 with ffmpeg/ffprobe for media processing.',
-        operatingSystems: ['Linux'],
-        architectures: ['x86-64'],
+        UsageText: 'Generic Lambda images (with ffmpeg) for AI social media helper.',
+        AboutText: 'Heavy Lambda container images built on AL2023 with ffmpeg/ffprobe for media processing.',
+        OperatingSystems: ['Linux'],
+        Architectures: ['x86-64'],
       },
     });
 

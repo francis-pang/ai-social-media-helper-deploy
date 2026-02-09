@@ -154,10 +154,15 @@ export class OperationsStack extends cdk.Stack {
     const cwLogsToFirehoseRole = new iam.Role(this, 'CWLogsToFirehoseRole', {
       assumedBy: new iam.ServicePrincipal(`logs.${this.region}.amazonaws.com`),
     });
-    cwLogsToFirehoseRole.addToPolicy(new iam.PolicyStatement({
-      actions: ['firehose:PutRecord', 'firehose:PutRecordBatch'],
-      resources: [infoFirehose.attrArn, debugFirehose.attrArn],
-    }));
+    const cwLogsPolicy = new iam.Policy(this, 'CWLogsToFirehosePolicy', {
+      roles: [cwLogsToFirehoseRole],
+      statements: [
+        new iam.PolicyStatement({
+          actions: ['firehose:PutRecord', 'firehose:PutRecordBatch'],
+          resources: [infoFirehose.attrArn, debugFirehose.attrArn],
+        }),
+      ],
+    });
 
     // =========================================================================
     // Log Groups: 1-Day Retention + Subscription Filters + Metric Filters
@@ -167,49 +172,56 @@ export class OperationsStack extends cdk.Stack {
     for (const { id, fn } of lambdas) {
       const logGroupName = `/aws/lambda/${fn.functionName}`;
 
-      // Import CDK-managed log group and set 1-day retention
-      const logGroup = new logs.LogGroup(this, `LogGroup-${id}`, {
-        logGroupName,
-        retention: logs.RetentionDays.ONE_DAY,
-        removalPolicy: cdk.RemovalPolicy.DESTROY,
-      });
+      // Import the log group created by the BackendStack's Lambda construct.
+      // The BackendStack owns the log group resource; the OperationsStack only
+      // adds subscription filters and metric filters on top.
+      const logGroup = logs.LogGroup.fromLogGroupName(this, `LogGroup-${id}`, logGroupName);
 
       // Subscription filter 1: INFO+ logs (everything except debug)
-      // Pattern matches: JSON logs where level != "debug", plus non-JSON platform logs
-      new logs.CfnSubscriptionFilter(this, `InfoFilter-${id}`, {
+      // Captures all non-debug logs: both structured JSON (zerolog) and Lambda platform logs (REPORT/START/END)
+      const infoFilter = new logs.CfnSubscriptionFilter(this, `InfoFilter-${id}`, {
         logGroupName: logGroup.logGroupName,
         filterName: `${id}-info-and-above`,
-        filterPattern: '?INFO ?WARN ?ERROR ?FATAL ?REPORT ?"level":"info" ?"level":"warn" ?"level":"error" ?"level":"fatal"',
+        filterPattern: '?INFO ?WARN ?ERROR ?FATAL ?REPORT ?START ?END ?info ?warn ?error ?fatal',
         destinationArn: infoFirehose.attrArn,
         roleArn: cwLogsToFirehoseRole.roleArn,
       });
+      // Ensure IAM policy is fully created before testing Firehose delivery
+      infoFilter.node.addDependency(cwLogsPolicy);
 
-      // Subscription filter 2: DEBUG logs only
-      new logs.CfnSubscriptionFilter(this, `DebugFilter-${id}`, {
+      // Subscription filter 2: DEBUG logs only (structured JSON zerolog)
+      const debugFilter = new logs.CfnSubscriptionFilter(this, `DebugFilter-${id}`, {
         logGroupName: logGroup.logGroupName,
         filterName: `${id}-debug`,
-        filterPattern: '?"level":"debug" ?DEBUG',
+        filterPattern: '?DEBUG ?debug ?trace',
         destinationArn: debugFirehose.attrArn,
         roleArn: cwLogsToFirehoseRole.roleArn,
       });
+      debugFilter.node.addDependency(cwLogsPolicy);
 
       // --- Metric Filters ---
+      // Note: CloudWatch metric filter dimensions require JSON filter patterns.
+      // Text-based patterns (literal, anyTerm, allTerms) use defaultValue instead.
+      // Each metric filter uses a unique metricName per Lambda to distinguish them.
+      // JSON filter patterns support dimensions; text patterns do not.
+      // Use JSON patterns (stringValue) for structured log fields, text
+      // patterns (anyTerm/allTerms) for unstructured keyword searches.
       new logs.MetricFilter(this, `ErrorFilter-${id}`, {
         logGroup,
-        filterPattern: logs.FilterPattern.literal('"level":"error"'),
+        filterPattern: logs.FilterPattern.stringValue('$.level', '=', 'error'),
         metricNamespace,
-        metricName: 'AppLogErrors',
+        metricName: `AppLogErrors-${id}`,
         metricValue: '1',
-        dimensions: { FunctionName: fn.functionName },
+        defaultValue: 0,
       });
 
       new logs.MetricFilter(this, `FatalFilter-${id}`, {
         logGroup,
-        filterPattern: logs.FilterPattern.literal('"level":"fatal"'),
+        filterPattern: logs.FilterPattern.stringValue('$.level', '=', 'fatal'),
         metricNamespace,
-        metricName: 'CriticalErrors',
+        metricName: `CriticalErrors-${id}`,
         metricValue: '1',
-        dimensions: { FunctionName: fn.functionName },
+        defaultValue: 0,
       });
 
       new logs.MetricFilter(this, `RateLimitFilter-${id}`, {
@@ -218,7 +230,7 @@ export class OperationsStack extends cdk.Stack {
         metricNamespace,
         metricName: 'RateLimitHits',
         metricValue: '1',
-        dimensions: { FunctionName: fn.functionName },
+        defaultValue: 0,
       });
 
       new logs.MetricFilter(this, `TimeoutFilter-${id}`, {
@@ -227,7 +239,7 @@ export class OperationsStack extends cdk.Stack {
         metricNamespace,
         metricName: 'TimeoutErrors',
         metricValue: '1',
-        dimensions: { FunctionName: fn.functionName },
+        defaultValue: 0,
       });
 
       new logs.MetricFilter(this, `AuthFilter-${id}`, {
@@ -236,7 +248,7 @@ export class OperationsStack extends cdk.Stack {
         metricNamespace,
         metricName: 'AuthFailures',
         metricValue: '1',
-        dimensions: { FunctionName: fn.functionName },
+        defaultValue: 0,
       });
 
       new logs.MetricFilter(this, `ColdStartFilter-${id}`, {
@@ -245,7 +257,7 @@ export class OperationsStack extends cdk.Stack {
         metricNamespace,
         metricName: 'ColdStarts',
         metricValue: '1',
-        dimensions: { FunctionName: fn.functionName },
+        defaultValue: 0,
       });
     }
 
@@ -843,7 +855,7 @@ export class OperationsStack extends cdk.Stack {
     dashboard.addWidgets(
       new cloudwatch.GraphWidget({
         title: 'App Errors from Logs',
-        left: lambdas.map(({ fn }) => logMetric('AppLogErrors', fn.functionName)),
+        left: lambdas.map(({ id }) => logMetric(`AppLogErrors-${id}`)),
         stacked: true,
         width: 8,
         height: 6,
@@ -855,9 +867,8 @@ export class OperationsStack extends cdk.Stack {
         height: 6,
       }),
       new cloudwatch.GraphWidget({
-        title: 'Cold Starts by Function',
-        left: lambdas.map(({ fn }) => logMetric('ColdStarts', fn.functionName)),
-        stacked: true,
+        title: 'Cold Starts (all functions)',
+        left: [logMetric('ColdStarts')],
         width: 8,
         height: 6,
       }),
