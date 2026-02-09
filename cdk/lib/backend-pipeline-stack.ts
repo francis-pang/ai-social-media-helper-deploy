@@ -17,31 +17,35 @@ export interface BackendPipelineStackProps extends cdk.StackProps {
   publicLightRepoName: string;
   /** ECR Public heavy repository name (Thumbnail + Video Lambdas — generic code, DDR-041) */
   publicHeavyRepoName: string;
-  /** All 5 Lambda functions to update after build */
+  /** All 5 core Lambda functions to update after build */
   apiHandler: lambda.IFunction;
   thumbnailProcessor: lambda.IFunction;
   selectionProcessor: lambda.IFunction;
   enhancementProcessor: lambda.IFunction;
   videoProcessor: lambda.IFunction;
+  /** ECR Private repository for webhook Lambda image (DDR-044) */
+  webhookEcrRepo: ecr.IRepository;
+  /** Webhook Lambda function to update after build (DDR-044) */
+  webhookHandler: lambda.IFunction;
   /** CodeStar connection ARN (DDR-028: parameterized, not hardcoded) */
   codeStarConnectionArn: string;
 }
 
 /**
- * BackendPipelineStack creates a CodePipeline that builds all 5 Lambda
- * container images and deploys them independently of the frontend (DDR-035).
+ * BackendPipelineStack creates a CodePipeline that builds all 6 Lambda
+ * container images and deploys them independently of the frontend (DDR-035, DDR-044).
  *
- * Container Registry Strategy (DDR-041):
- * - ECR Private: API (light) + Selection (heavy) — proprietary code
+ * Container Registry Strategy (DDR-041, DDR-044):
+ * - ECR Private: API (light) + Selection (heavy) + Webhook (dedicated) — proprietary code
  * - ECR Public: Enhancement (light) + Thumbnail + Video (heavy) — generic code
  *
  * Pipeline stages:
  * 1. Source: GitHub main branch via CodeStar Connection
- * 2. Build: 5 Docker builds — 2 to ECR Private, 3 to ECR Public
- * 3. Deploy: Update all 5 Lambda functions with their specific image URIs
+ * 2. Build: 6 Docker builds — 3 to ECR Private, 3 to ECR Public
+ * 3. Deploy: Update all 6 Lambda functions with their specific image URIs
  *
  * Each Lambda gets its own container image with exactly one Go binary.
- * Docker layer caching means builds 2-5 reuse the Go module download
+ * Docker layer caching means builds 2-6 reuse the Go module download
  * layer from build 1 (~30s saved per subsequent build).
  *
  * See docs/DOCKER-IMAGES.md for the full image strategy and layer sharing.
@@ -85,6 +89,7 @@ export class BackendPipelineStack extends cdk.Stack {
     // ECR Private repo URIs (account-specific)
     const privateLight = props.lightEcrRepo.repositoryUri;
     const privateHeavy = props.heavyEcrRepo.repositoryUri;
+    const privateWebhook = props.webhookEcrRepo.repositoryUri;
     // ECR Public repo URIs (public.ecr.aws/<alias>/<repo-name>)
     // The public registry alias is resolved after the first push. We construct
     // the URI at build time using the AWS CLI to fetch the registry alias.
@@ -101,6 +106,7 @@ export class BackendPipelineStack extends cdk.Stack {
       environmentVariables: {
         PRIVATE_LIGHT_URI: { value: privateLight },
         PRIVATE_HEAVY_URI: { value: privateHeavy },
+        PRIVATE_WEBHOOK_URI: { value: privateWebhook },
         PUBLIC_LIGHT_NAME: { value: publicLightName },
         PUBLIC_HEAVY_NAME: { value: publicHeavyName },
         AWS_ACCOUNT_ID: { value: this.account },
@@ -157,6 +163,10 @@ export class BackendPipelineStack extends cdk.Stack {
               // --- Build 5: Video Lambda (generic ffmpeg video processing) ---
               'echo "Building Video Lambda..."',
               'docker build --build-arg CMD_TARGET=video-lambda -t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest -f cmd/media-lambda/Dockerfile.heavy .',
+
+              // --- Build 6: Webhook Lambda (DDR-044: dedicated lightweight handler) ---
+              'echo "Building Webhook Lambda (private webhook)..."',
+              'docker build --build-arg CMD_TARGET=webhook-lambda -t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest -f cmd/media-lambda/Dockerfile.light .',
             ],
           },
           post_build: {
@@ -174,6 +184,10 @@ export class BackendPipelineStack extends cdk.Stack {
               'docker push $PRIVATE_HEAVY_URI:video-$COMMIT',
               'docker push $PRIVATE_HEAVY_URI:video-latest',
 
+              // Push ECR Private webhook image (DDR-044)
+              'docker push $PRIVATE_WEBHOOK_URI:webhook-$COMMIT',
+              'docker push $PRIVATE_WEBHOOK_URI:webhook-latest',
+
               // Push ECR Public images (for distribution, DDR-041)
               'echo "Pushing public images..."',
               'docker push $PUBLIC_LIGHT_URI:enhance-$COMMIT',
@@ -184,7 +198,7 @@ export class BackendPipelineStack extends cdk.Stack {
               'docker push $PUBLIC_HEAVY_URI:video-latest',
 
               // Write image URIs for deploy stage — Lambda requires ECR Private URIs
-              `echo '{"apiImage":"'$PRIVATE_LIGHT_URI:api-$COMMIT'","enhanceImage":"'$PRIVATE_LIGHT_URI:enhance-$COMMIT'","thumbImage":"'$PRIVATE_HEAVY_URI:thumb-$COMMIT'","selectImage":"'$PRIVATE_HEAVY_URI:select-$COMMIT'","videoImage":"'$PRIVATE_HEAVY_URI:video-$COMMIT'"}' > imageDetail.json`,
+              `echo '{"apiImage":"'$PRIVATE_LIGHT_URI:api-$COMMIT'","enhanceImage":"'$PRIVATE_LIGHT_URI:enhance-$COMMIT'","thumbImage":"'$PRIVATE_HEAVY_URI:thumb-$COMMIT'","selectImage":"'$PRIVATE_HEAVY_URI:select-$COMMIT'","videoImage":"'$PRIVATE_HEAVY_URI:video-$COMMIT'","webhookImage":"'$PRIVATE_WEBHOOK_URI:webhook-$COMMIT'"}' > imageDetail.json`,
             ],
           },
         },
@@ -197,6 +211,7 @@ export class BackendPipelineStack extends cdk.Stack {
     // Grant CodeBuild permission to push images to ECR Private repos
     props.lightEcrRepo.grantPullPush(backendBuild);
     props.heavyEcrRepo.grantPullPush(backendBuild);
+    props.webhookEcrRepo.grantPullPush(backendBuild);
 
     // Grant read access to the ffmpeg cache repo (ECR-mirrored mwader/static-ffmpeg)
     backendBuild.addToRolePolicy(
@@ -243,13 +258,14 @@ export class BackendPipelineStack extends cdk.Stack {
       }),
     );
 
-    // --- Deploy (update all 5 Lambda functions) ---
+    // --- Deploy (update all 6 Lambda functions) ---
     const allLambdas = [
       { name: props.apiHandler.functionName, imageKey: 'apiImage' },
       { name: props.enhancementProcessor.functionName, imageKey: 'enhanceImage' },
       { name: props.thumbnailProcessor.functionName, imageKey: 'thumbImage' },
       { name: props.selectionProcessor.functionName, imageKey: 'selectImage' },
       { name: props.videoProcessor.functionName, imageKey: 'videoImage' },
+      { name: props.webhookHandler.functionName, imageKey: 'webhookImage' },
     ];
 
     const deployProject = new codebuild.PipelineProject(this, 'DeployProject', {
@@ -302,18 +318,21 @@ export class BackendPipelineStack extends cdk.Stack {
             'export THUMB_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'thumbImage\'])")',
             'export SELECT_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'selectImage\'])")',
             'export VIDEO_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'videoImage\'])")',
+            'export WEBHOOK_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'webhookImage\'])")',
 
             `echo "Updating ${props.apiHandler.functionName} (private)..." && aws lambda update-function-code --function-name ${props.apiHandler.functionName} --image-uri $API_IMAGE`,
             `echo "Updating ${props.enhancementProcessor.functionName} (public)..." && aws lambda update-function-code --function-name ${props.enhancementProcessor.functionName} --image-uri $ENHANCE_IMAGE`,
             `echo "Updating ${props.thumbnailProcessor.functionName} (public)..." && aws lambda update-function-code --function-name ${props.thumbnailProcessor.functionName} --image-uri $THUMB_IMAGE`,
             `echo "Updating ${props.selectionProcessor.functionName} (private)..." && aws lambda update-function-code --function-name ${props.selectionProcessor.functionName} --image-uri $SELECT_IMAGE`,
             `echo "Updating ${props.videoProcessor.functionName} (public)..." && aws lambda update-function-code --function-name ${props.videoProcessor.functionName} --image-uri $VIDEO_IMAGE`,
+            `echo "Updating ${props.webhookHandler.functionName} (private webhook)..." && aws lambda update-function-code --function-name ${props.webhookHandler.functionName} --image-uri $WEBHOOK_IMAGE`,
 
             `aws lambda wait function-updated --function-name ${props.apiHandler.functionName}`,
             `aws lambda wait function-updated --function-name ${props.enhancementProcessor.functionName}`,
             `aws lambda wait function-updated --function-name ${props.thumbnailProcessor.functionName}`,
             `aws lambda wait function-updated --function-name ${props.selectionProcessor.functionName}`,
             `aws lambda wait function-updated --function-name ${props.videoProcessor.functionName}`,
+            `aws lambda wait function-updated --function-name ${props.webhookHandler.functionName}`,
           ],
         },
       },
@@ -329,6 +348,7 @@ export class BackendPipelineStack extends cdk.Stack {
           props.selectionProcessor.functionArn,
           props.enhancementProcessor.functionArn,
           props.videoProcessor.functionArn,
+          props.webhookHandler.functionArn,
         ],
       }),
     );

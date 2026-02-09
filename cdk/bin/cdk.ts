@@ -6,6 +6,7 @@ import { BackendStack } from '../lib/backend-stack';
 import { FrontendPipelineStack } from '../lib/frontend-pipeline-stack';
 import { BackendPipelineStack } from '../lib/backend-pipeline-stack';
 import { OperationsStack } from '../lib/operations-stack';
+import { WebhookStack } from '../lib/webhook-stack';
 
 const app = new cdk.App();
 
@@ -50,8 +51,12 @@ const frontendPipeline = new FrontendPipelineStack(app, 'AiSocialMediaFrontendPi
 });
 frontendPipeline.addDependency(frontend);
 
-// 5. Backend Pipeline: 5 Docker builds -> 5 Lambda updates (DDR-035, DDR-041)
+// 5. Webhook: Dedicated CloudFront + API Gateway + Lambda for Meta webhooks (DDR-044)
+const webhook = new WebhookStack(app, 'AiSocialMediaWebhook', { env });
+
+// 6. Backend Pipeline: 6 Docker builds -> 6 Lambda updates (DDR-035, DDR-041, DDR-044)
 //    2 images -> ECR Private (API, Selection), 3 images -> ECR Public (Enhancement, Thumbnail, Video)
+//    1 image -> ECR Private Webhook
 const backendPipeline = new BackendPipelineStack(app, 'AiSocialMediaBackendPipeline', {
   env,
   lightEcrRepo: backend.lightEcrRepo,
@@ -63,11 +68,14 @@ const backendPipeline = new BackendPipelineStack(app, 'AiSocialMediaBackendPipel
   selectionProcessor: backend.selectionProcessor,
   enhancementProcessor: backend.enhancementProcessor,
   videoProcessor: backend.videoProcessor,
+  webhookEcrRepo: webhook.webhookEcrRepo,
+  webhookHandler: webhook.webhookHandler,
   codeStarConnectionArn,
 });
 backendPipeline.addDependency(backend);
+backendPipeline.addDependency(webhook);
 
-// 6. Operations: Alarms, dashboard, log archival, X-Ray, metric filters
+// 7. Operations: Alarms, dashboard, log archival, X-Ray, metric filters
 const operations = new OperationsStack(app, 'AiSocialMediaOperations', {
   env,
   lambdas: [
