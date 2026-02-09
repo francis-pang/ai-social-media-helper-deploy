@@ -21,6 +21,8 @@
     "experimentalDecorators": true,
     "strictPropertyInitialization": false,
     "skipLibCheck": true,
+    "incremental": true,
+    "tsBuildInfoFile": ".tsbuildinfo",
     "typeRoots": [
       "./node_modules/@types"
     ]

@@ -2,28 +2,19 @@ import * as cdk from 'aws-cdk-lib/core';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as logs from 'aws-cdk-lib/aws-logs';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
-import * as cw_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as sns from 'aws-cdk-lib/aws-sns';
-import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as firehose from 'aws-cdk-lib/aws-kinesisfirehose';
-import * as logs_destinations from 'aws-cdk-lib/aws-logs-destinations';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as glue from 'aws-cdk-lib/aws-glue';
 import { Construct } from 'constructs';
 
-/** Named Lambda entry for construct-ID-safe iteration */
-export interface NamedLambda {
-  /** Human-readable name for construct IDs (e.g. 'ApiHandler', 'VideoProcessor') */
-  id: string;
-  /** The Lambda function */
-  fn: lambda.Function;
-}
+import { NamedLambda } from './operations-alert-stack.js';
 
-export interface OperationsStackProps extends cdk.StackProps {
+export interface OperationsMonitoringStackProps extends cdk.StackProps {
   /** All Lambda functions to monitor, with stable names for construct IDs */
   lambdas: NamedLambda[];
   /** API Gateway HTTP API */
@@ -35,47 +26,34 @@ export interface OperationsStackProps extends cdk.StackProps {
   sessionsTable: dynamodb.ITable;
   /** S3 media bucket */
   mediaBucket: s3.IBucket;
-  /** CloudFront distribution domain (for dashboard) */
-  cloudFrontDomain?: string;
-  /** Email for alarm notifications (optional, pass via -c alertEmail=...) */
-  alertEmail?: string;
   /** Log archive S3 bucket (from StorageStack — DDR-045: stateful/stateless split) */
   logArchiveBucket: s3.IBucket;
   /** Metrics archive S3 bucket (from StorageStack — DDR-045: optional, stateful/stateless split) */
   metricsArchiveBucket?: s3.IBucket;
+  /** All alarms from OperationsAlertStack (for dashboard alarm status widget) */
+  alarms: cloudwatch.Alarm[];
 }
 
 /**
- * OperationsStack provides full observability for the AI Social Media Helper.
+ * OperationsMonitoringStack provides dashboards, metric filters, log archival,
+ * and Glue tables (DDR-047: split from OperationsStack).
  *
  * Components:
- * - 1-day CloudWatch Logs retention + S3 log archival via Firehose (tiered lifecycle)
- * - 6 metric filters extracting signals from zerolog output
- * - SNS alert topic with optional email subscription
- * - 17 CloudWatch alarms (Lambda, API Gateway, Step Functions)
- * - X-Ray active tracing on all Lambdas
+ * - 2 Firehose delivery streams (INFO+ and DEBUG logs -> S3)
+ * - 30 metric filters (6 per Lambda × 5 Lambdas)
+ * - 10 subscription filters (2 per Lambda for Firehose archival)
+ * - Glue database + table for Athena querying
  * - ~45-widget CloudWatch dashboard
- * - (Optional) Metric Streams -> Firehose -> S3 for long-term metric storage
+ * - (Optional) Metric Streams -> Firehose -> S3
+ *
+ * This stack changes rarely and is slower to deploy (~5 min).
+ * See also: OperationsAlertStack for alarms, SNS, and X-Ray.
  */
-export class OperationsStack extends cdk.Stack {
-  constructor(scope: Construct, id: string, props: OperationsStackProps) {
+export class OperationsMonitoringStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props: OperationsMonitoringStackProps) {
     super(scope, id, props);
 
     const lambdas = props.lambdas;
-
-    // =========================================================================
-    // SNS Alert Topic
-    // =========================================================================
-    const alertTopic = new sns.Topic(this, 'AlertTopic', {
-      topicName: 'AiSocialMediaAlerts',
-      displayName: 'AI Social Media Helper Alerts',
-    });
-
-    if (props.alertEmail) {
-      alertTopic.addSubscription(
-        new sns_subscriptions.EmailSubscription(props.alertEmail),
-      );
-    }
 
     // Log archive bucket from StorageStack (DDR-045: stateful/stateless split)
     const logArchiveBucket = props.logArchiveBucket;
@@ -136,7 +114,7 @@ export class OperationsStack extends cdk.Stack {
     });
 
     // =========================================================================
-    // Log Groups: 1-Day Retention + Subscription Filters + Metric Filters
+    // Log Groups: Subscription Filters + Metric Filters
     // =========================================================================
     const metricNamespace = 'AiSocialMedia/Logs';
 
@@ -144,12 +122,9 @@ export class OperationsStack extends cdk.Stack {
       const logGroupName = `/aws/lambda/${fn.functionName}`;
 
       // Import the log group created by the BackendStack's Lambda construct.
-      // The BackendStack owns the log group resource; the OperationsStack only
-      // adds subscription filters and metric filters on top.
       const logGroup = logs.LogGroup.fromLogGroupName(this, `LogGroup-${id}`, logGroupName);
 
       // Subscription filter 1: INFO+ logs (everything except debug)
-      // Captures all non-debug logs: both structured JSON (zerolog) and Lambda platform logs (REPORT/START/END)
       const infoFilter = new logs.CfnSubscriptionFilter(this, `InfoFilter-${id}`, {
         logGroupName: logGroup.logGroupName,
         filterName: `${id}-info-and-above`,
@@ -157,10 +132,9 @@ export class OperationsStack extends cdk.Stack {
         destinationArn: infoFirehose.attrArn,
         roleArn: cwLogsToFirehoseRole.roleArn,
       });
-      // Ensure IAM policy is fully created before testing Firehose delivery
       infoFilter.node.addDependency(cwLogsPolicy);
 
-      // Subscription filter 2: DEBUG logs only (structured JSON zerolog)
+      // Subscription filter 2: DEBUG logs only
       const debugFilter = new logs.CfnSubscriptionFilter(this, `DebugFilter-${id}`, {
         logGroupName: logGroup.logGroupName,
         filterName: `${id}-debug`,
@@ -171,12 +145,6 @@ export class OperationsStack extends cdk.Stack {
       debugFilter.node.addDependency(cwLogsPolicy);
 
       // --- Metric Filters ---
-      // Note: CloudWatch metric filter dimensions require JSON filter patterns.
-      // Text-based patterns (literal, anyTerm, allTerms) use defaultValue instead.
-      // Each metric filter uses a unique metricName per Lambda to distinguish them.
-      // JSON filter patterns support dimensions; text patterns do not.
-      // Use JSON patterns (stringValue) for structured log fields, text
-      // patterns (anyTerm/allTerms) for unstructured keyword searches.
       new logs.MetricFilter(this, `ErrorFilter-${id}`, {
         logGroup,
         filterPattern: logs.FilterPattern.stringValue('$.level', '=', 'error'),
@@ -282,125 +250,6 @@ export class OperationsStack extends cdk.Stack {
     tableNode.node.addDependency(glueDb);
 
     // =========================================================================
-    // X-Ray Active Tracing
-    // =========================================================================
-    for (const { fn } of lambdas) {
-      // Enable X-Ray tracing on each Lambda
-      const cfnFn = fn.node.defaultChild as lambda.CfnFunction;
-      cfnFn.addPropertyOverride('TracingConfig', { Mode: 'Active' });
-    }
-
-    // =========================================================================
-    // CloudWatch Alarms
-    // =========================================================================
-    const alarms: cloudwatch.Alarm[] = [];
-
-    // --- Lambda Alarms (per function) ---
-    for (const { id, fn } of lambdas) {
-      const errAlarm = new cloudwatch.Alarm(this, `${id}-Errors`, {
-        alarmName: `AiSocialMedia-${id}-Errors`,
-        metric: fn.metricErrors({ period: cdk.Duration.minutes(1) }),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        alarmDescription: `Lambda ${id} has invocation errors`,
-      });
-      errAlarm.addAlarmAction(new cw_actions.SnsAction(alertTopic));
-      alarms.push(errAlarm);
-
-      const throttleAlarm = new cloudwatch.Alarm(this, `${id}-Throttles`, {
-        alarmName: `AiSocialMedia-${id}-Throttles`,
-        metric: fn.metricThrottles({ period: cdk.Duration.minutes(1) }),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        alarmDescription: `Lambda ${id} is being throttled`,
-      });
-      throttleAlarm.addAlarmAction(new cw_actions.SnsAction(alertTopic));
-      alarms.push(throttleAlarm);
-    }
-
-    // --- Lambda Duration Alarms (heavy Lambdas: selection=15min, enhancement=5min, video=15min) ---
-    const durationAlarms: Array<{ fn: lambda.Function; maxMs: number; name: string }> = [
-      { fn: lambdas[2].fn, maxMs: 12 * 60 * 1000, name: 'Selection' },   // 80% of 15min
-      { fn: lambdas[3].fn, maxMs: 4 * 60 * 1000, name: 'Enhancement' },  // 80% of 5min
-      { fn: lambdas[4].fn, maxMs: 12 * 60 * 1000, name: 'Video' },        // 80% of 15min
-    ];
-
-    for (const { fn, maxMs, name } of durationAlarms) {
-      const alarm = new cloudwatch.Alarm(this, `${name}Duration`, {
-        alarmName: `AiSocialMedia-${name}Duration`,
-        metric: fn.metricDuration({
-          period: cdk.Duration.minutes(5),
-          statistic: 'p99',
-        }),
-        threshold: maxMs,
-        evaluationPeriods: 1,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        alarmDescription: `${name} Lambda p99 duration approaching timeout`,
-      });
-      alarm.addAlarmAction(new cw_actions.SnsAction(alertTopic));
-      alarms.push(alarm);
-    }
-
-    // --- API Gateway Alarms ---
-    const apiMetric = (metricName: string, stat: string, period: cdk.Duration) =>
-      new cloudwatch.Metric({
-        namespace: 'AWS/ApiGateway',
-        metricName,
-        dimensionsMap: { ApiId: props.httpApi.apiId },
-        statistic: stat,
-        period,
-      });
-
-    const api5xxAlarm = new cloudwatch.Alarm(this, 'Api5xxErrors', {
-      alarmName: 'AiSocialMedia-Api5xxErrors',
-      metric: apiMetric('5xx', 'Sum', cdk.Duration.minutes(5)),
-      threshold: 1,
-      evaluationPeriods: 1,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      alarmDescription: 'API Gateway returning 5XX errors',
-    });
-    api5xxAlarm.addAlarmAction(new cw_actions.SnsAction(alertTopic));
-    alarms.push(api5xxAlarm);
-
-    const api4xxAlarm = new cloudwatch.Alarm(this, 'Api4xxSpike', {
-      alarmName: 'AiSocialMedia-Api4xxSpike',
-      metric: apiMetric('4xx', 'Sum', cdk.Duration.minutes(5)),
-      threshold: 20,
-      evaluationPeriods: 1,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      alarmDescription: 'API Gateway 4XX error spike (potential abuse)',
-    });
-    api4xxAlarm.addAlarmAction(new cw_actions.SnsAction(alertTopic));
-    alarms.push(api4xxAlarm);
-
-    // --- Step Functions Alarms ---
-    const pipelines = [
-      { sm: props.selectionPipeline, name: 'SelectionPipeline' },
-      { sm: props.enhancementPipeline, name: 'EnhancementPipeline' },
-    ];
-
-    for (const { sm, name } of pipelines) {
-      const alarm = new cloudwatch.Alarm(this, `${name}Failed`, {
-        alarmName: `AiSocialMedia-${name}Failed`,
-        metric: sm.metricFailed({ period: cdk.Duration.minutes(5) }),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        alarmDescription: `${name} Step Functions execution failed`,
-      });
-      alarm.addAlarmAction(new cw_actions.SnsAction(alertTopic));
-      alarms.push(alarm);
-    }
-
-    // =========================================================================
     // CloudWatch Dashboard (~45 widgets)
     // =========================================================================
     const dashboard = new cloudwatch.Dashboard(this, 'Dashboard', {
@@ -445,7 +294,7 @@ export class OperationsStack extends cdk.Stack {
     dashboard.addWidgets(
       new cloudwatch.AlarmStatusWidget({
         title: 'Alarm Status',
-        alarms,
+        alarms: props.alarms,
         width: 6,
         height: 4,
       }),
@@ -924,13 +773,6 @@ export class OperationsStack extends cdk.Stack {
     // =========================================================================
     // Outputs
     // =========================================================================
-    new cdk.CfnOutput(this, 'AlertTopicArn', {
-      value: alertTopic.topicArn,
-      description: 'SNS topic ARN for alarm notifications',
-    });
-
-    // Log archive bucket output moved to StorageStack (DDR-045)
-
     new cdk.CfnOutput(this, 'DashboardUrl', {
       value: `https://${this.region}.console.aws.amazon.com/cloudwatch/home?region=${this.region}#dashboards:name=AiSocialMediaDashboard`,
       description: 'CloudWatch Dashboard URL',

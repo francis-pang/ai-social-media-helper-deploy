@@ -92,6 +92,10 @@ export class BackendPipelineStack extends cdk.Stack {
         computeType: codebuild.ComputeType.MEDIUM,
         privileged: true, // Required for Docker-in-Docker
       },
+      // S3 cache for Go modules and build cache (DDR-047)
+      cache: codebuild.Cache.bucket(artifactBucket, {
+        prefix: 'codebuild-cache/backend',
+      }),
       environmentVariables: {
         PRIVATE_LIGHT_URI: { value: privateLight },
         PRIVATE_HEAVY_URI: { value: privateHeavy },
@@ -111,6 +115,8 @@ export class BackendPipelineStack extends cdk.Stack {
           },
           pre_build: {
             commands: [
+              // Enable Docker BuildKit for cache mounts and parallel stages (DDR-047)
+              'export DOCKER_BUILDKIT=1',
               // Authenticate with ECR Private
               'aws ecr get-login-password --region $AWS_REGION_NAME | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION_NAME.amazonaws.com',
               // Authenticate with ECR Public (always us-east-1, DDR-041)
@@ -122,6 +128,11 @@ export class BackendPipelineStack extends cdk.Stack {
               'echo "ECR Public alias: $PUBLIC_ALIAS"',
               'echo "Public light URI: $PUBLIC_LIGHT_URI"',
               'echo "Public heavy URI: $PUBLIC_HEAVY_URI"',
+              // Pull previous :latest images for Docker layer cache (DDR-047, soft-fail on first build)
+              'echo "Pulling previous images for layer cache..."',
+              'docker pull $PRIVATE_LIGHT_URI:api-latest || true',
+              'docker pull $PRIVATE_HEAVY_URI:select-latest || true',
+              'docker pull $PRIVATE_WEBHOOK_URI:webhook-latest || true',
               // Go vulnerability scanning
               'go install golang.org/x/vuln/cmd/govulncheck@latest',
               'govulncheck ./... || echo "WARN: govulncheck found vulnerabilities (non-blocking)"',
@@ -131,60 +142,50 @@ export class BackendPipelineStack extends cdk.Stack {
             commands: [
               'COMMIT=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c1-7)',
 
-              // --- ECR Private: Light images (proprietary, no ffmpeg) ---
-              // Build 1: API Lambda (auth, session management, prompt orchestration)
-              'echo "Building API Lambda (private light)..."',
-              'docker build --build-arg CMD_TARGET=media-lambda -t $PRIVATE_LIGHT_URI:api-$COMMIT -t $PRIVATE_LIGHT_URI:api-latest -f cmd/media-lambda/Dockerfile.light .',
+              // --- Parallel Docker builds in 3 waves (DDR-047) ---
+              // Helper function for building images with --cache-from
+              'build_image() { local cmd=$1 df=$2 tags=$3 cache=$4; echo "Building $cmd..."; docker build --cache-from "$cache" --build-arg CMD_TARGET="$cmd" -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"; }',
 
-              // --- Build 2: Enhancement Lambda (generic Gemini passthrough) ---
-              // Tagged for both ECR Private (Lambda consumption) and ECR Public (distribution)
-              'echo "Building Enhancement Lambda..."',
-              'docker build --build-arg CMD_TARGET=enhance-lambda -t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest -t $PUBLIC_LIGHT_URI:enhance-$COMMIT -t $PUBLIC_LIGHT_URI:enhance-latest -f cmd/media-lambda/Dockerfile.light .',
+              // Wave 1: Light images (fast, ~30s each, no ffmpeg)
+              'build_image media-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:api-$COMMIT -t $PRIVATE_LIGHT_URI:api-latest" "$PRIVATE_LIGHT_URI:api-latest" &',
+              'build_image enhance-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest -t $PUBLIC_LIGHT_URI:enhance-$COMMIT -t $PUBLIC_LIGHT_URI:enhance-latest" "$PRIVATE_LIGHT_URI:api-latest" &',
+              'build_image webhook-lambda Dockerfile.light "-t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest" "$PRIVATE_WEBHOOK_URI:webhook-latest" &',
+              'wait',
 
-              // --- Build 3: Thumbnail Lambda (generic ffmpeg thumbnail extraction) ---
-              'echo "Building Thumbnail Lambda..."',
-              'docker build --build-arg CMD_TARGET=thumbnail-lambda -t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest -t $PUBLIC_HEAVY_URI:thumb-$COMMIT -t $PUBLIC_HEAVY_URI:thumb-latest -f cmd/media-lambda/Dockerfile.heavy .',
-
-              // --- Build 4: Selection Lambda (proprietary AI selection algorithms) ---
-              'echo "Building Selection Lambda (private heavy)..."',
-              'docker build --build-arg CMD_TARGET=selection-lambda -t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest -f cmd/media-lambda/Dockerfile.heavy .',
-
-              // --- Build 5: Video Lambda (generic ffmpeg video processing) ---
-              'echo "Building Video Lambda..."',
-              'docker build --build-arg CMD_TARGET=video-lambda -t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest -f cmd/media-lambda/Dockerfile.heavy .',
-
-              // --- Build 6: Webhook Lambda (DDR-044: dedicated lightweight handler) ---
-              'echo "Building Webhook Lambda (private webhook)..."',
-              'docker build --build-arg CMD_TARGET=webhook-lambda -t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest -f cmd/media-lambda/Dockerfile.light .',
+              // Wave 2: Heavy images (slower, ~60-90s each, includes ffmpeg)
+              'build_image thumbnail-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest -t $PUBLIC_HEAVY_URI:thumb-$COMMIT -t $PUBLIC_HEAVY_URI:thumb-latest" "$PRIVATE_HEAVY_URI:select-latest" &',
+              'build_image selection-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest" "$PRIVATE_HEAVY_URI:select-latest" &',
+              'build_image video-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" &',
+              'wait',
             ],
           },
           post_build: {
             commands: [
-              // Push ECR Private images (used by Lambda)
-              'echo "Pushing private images..."',
-              'docker push $PRIVATE_LIGHT_URI:api-$COMMIT',
-              'docker push $PRIVATE_LIGHT_URI:api-latest',
-              'docker push $PRIVATE_LIGHT_URI:enhance-$COMMIT',
-              'docker push $PRIVATE_LIGHT_URI:enhance-latest',
-              'docker push $PRIVATE_HEAVY_URI:select-$COMMIT',
-              'docker push $PRIVATE_HEAVY_URI:select-latest',
-              'docker push $PRIVATE_HEAVY_URI:thumb-$COMMIT',
-              'docker push $PRIVATE_HEAVY_URI:thumb-latest',
-              'docker push $PRIVATE_HEAVY_URI:video-$COMMIT',
-              'docker push $PRIVATE_HEAVY_URI:video-latest',
-
-              // Push ECR Private webhook image (DDR-044)
-              'docker push $PRIVATE_WEBHOOK_URI:webhook-$COMMIT',
-              'docker push $PRIVATE_WEBHOOK_URI:webhook-latest',
-
-              // Push ECR Public images (for distribution, DDR-041)
-              'echo "Pushing public images..."',
-              'docker push $PUBLIC_LIGHT_URI:enhance-$COMMIT',
-              'docker push $PUBLIC_LIGHT_URI:enhance-latest',
-              'docker push $PUBLIC_HEAVY_URI:thumb-$COMMIT',
-              'docker push $PUBLIC_HEAVY_URI:thumb-latest',
-              'docker push $PUBLIC_HEAVY_URI:video-$COMMIT',
-              'docker push $PUBLIC_HEAVY_URI:video-latest',
+              // Push all images in parallel (DDR-047)
+              'echo "Pushing all images in parallel..."',
+              // ECR Private: light images
+              'docker push $PRIVATE_LIGHT_URI:api-$COMMIT &',
+              'docker push $PRIVATE_LIGHT_URI:api-latest &',
+              'docker push $PRIVATE_LIGHT_URI:enhance-$COMMIT &',
+              'docker push $PRIVATE_LIGHT_URI:enhance-latest &',
+              // ECR Private: heavy images
+              'docker push $PRIVATE_HEAVY_URI:select-$COMMIT &',
+              'docker push $PRIVATE_HEAVY_URI:select-latest &',
+              'docker push $PRIVATE_HEAVY_URI:thumb-$COMMIT &',
+              'docker push $PRIVATE_HEAVY_URI:thumb-latest &',
+              'docker push $PRIVATE_HEAVY_URI:video-$COMMIT &',
+              'docker push $PRIVATE_HEAVY_URI:video-latest &',
+              // ECR Private: webhook (DDR-044)
+              'docker push $PRIVATE_WEBHOOK_URI:webhook-$COMMIT &',
+              'docker push $PRIVATE_WEBHOOK_URI:webhook-latest &',
+              // ECR Public images (for distribution, DDR-041)
+              'docker push $PUBLIC_LIGHT_URI:enhance-$COMMIT &',
+              'docker push $PUBLIC_LIGHT_URI:enhance-latest &',
+              'docker push $PUBLIC_HEAVY_URI:thumb-$COMMIT &',
+              'docker push $PUBLIC_HEAVY_URI:thumb-latest &',
+              'docker push $PUBLIC_HEAVY_URI:video-$COMMIT &',
+              'docker push $PUBLIC_HEAVY_URI:video-latest &',
+              'wait',
 
               // Write image URIs for deploy stage — Lambda requires ECR Private URIs
               `echo '{"apiImage":"'$PRIVATE_LIGHT_URI:api-$COMMIT'","enhanceImage":"'$PRIVATE_LIGHT_URI:enhance-$COMMIT'","thumbImage":"'$PRIVATE_HEAVY_URI:thumb-$COMMIT'","selectImage":"'$PRIVATE_HEAVY_URI:select-$COMMIT'","videoImage":"'$PRIVATE_HEAVY_URI:video-$COMMIT'","webhookImage":"'$PRIVATE_WEBHOOK_URI:webhook-$COMMIT'"}' > imageDetail.json`,
@@ -193,6 +194,12 @@ export class BackendPipelineStack extends cdk.Stack {
         },
         artifacts: {
           files: ['imageDetail.json'],
+        },
+        cache: {
+          paths: [
+            '/go/pkg/mod/**/*',
+            '/root/.cache/go-build/**/*',
+          ],
         },
       }),
     });

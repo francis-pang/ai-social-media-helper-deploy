@@ -6,7 +6,8 @@ import { FrontendStack } from '../lib/frontend-stack';
 import { BackendStack } from '../lib/backend-stack';
 import { FrontendPipelineStack } from '../lib/frontend-pipeline-stack';
 import { BackendPipelineStack } from '../lib/backend-pipeline-stack';
-import { OperationsStack } from '../lib/operations-stack';
+import { OperationsAlertStack } from '../lib/operations-alert-stack';
+import { OperationsMonitoringStack } from '../lib/operations-monitoring-stack';
 import { WebhookStack } from '../lib/webhook-stack';
 
 const app = new cdk.App();
@@ -123,28 +124,44 @@ backendPipeline.addDependency(backend);
 backendPipeline.addDependency(webhook);
 
 // =========================================================================
-// 8. Operations (STATELESS): Alarms, dashboard, log archival, X-Ray, metric filters
+// 8. Operations — Alerts (STATELESS): Alarms, SNS, X-Ray (DDR-047: split for fast deploys)
+// =========================================================================
+const lambdaEntries = [
+  { id: 'ApiHandler', fn: backend.apiHandler },
+  { id: 'ThumbnailProcessor', fn: backend.thumbnailProcessor },
+  { id: 'SelectionProcessor', fn: backend.selectionProcessor },
+  { id: 'EnhancementProcessor', fn: backend.enhancementProcessor },
+  { id: 'VideoProcessor', fn: backend.videoProcessor },
+];
+
+const opsAlert = new OperationsAlertStack(app, 'AiSocialMediaOperationsAlert', {
+  env,
+  lambdas: lambdaEntries,
+  httpApi: backend.httpApi,
+  selectionPipeline: backend.selectionPipeline,
+  enhancementPipeline: backend.enhancementPipeline,
+  alertEmail: app.node.tryGetContext('alertEmail'),
+});
+opsAlert.addDependency(backend);
+
+// =========================================================================
+// 9. Operations — Monitoring (STATELESS): Dashboard, metric filters, Firehose, Glue (DDR-047)
 // =========================================================================
 // Log/metrics archive buckets come from StorageStack (DDR-045)
-const operations = new OperationsStack(app, 'AiSocialMediaOperations', {
+const opsMonitoring = new OperationsMonitoringStack(app, 'AiSocialMediaOperationsMonitoring', {
   env,
-  lambdas: [
-    { id: 'ApiHandler', fn: backend.apiHandler },
-    { id: 'ThumbnailProcessor', fn: backend.thumbnailProcessor },
-    { id: 'SelectionProcessor', fn: backend.selectionProcessor },
-    { id: 'EnhancementProcessor', fn: backend.enhancementProcessor },
-    { id: 'VideoProcessor', fn: backend.videoProcessor },
-  ],
+  lambdas: lambdaEntries,
   httpApi: backend.httpApi,
   selectionPipeline: backend.selectionPipeline,
   enhancementPipeline: backend.enhancementPipeline,
   sessionsTable: storage.sessionsTable,
   mediaBucket: storage.mediaBucket,
-  alertEmail: app.node.tryGetContext('alertEmail'),
   logArchiveBucket: storage.logArchiveBucket,
   metricsArchiveBucket: storage.metricsArchiveBucket,
+  alarms: opsAlert.alarms,
 });
-operations.addDependency(backend);
-operations.addDependency(storage);
+opsMonitoring.addDependency(backend);
+opsMonitoring.addDependency(storage);
+opsMonitoring.addDependency(opsAlert);
 
 app.synth();
