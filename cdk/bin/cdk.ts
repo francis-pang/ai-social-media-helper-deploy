@@ -23,8 +23,8 @@ const env: cdk.Environment = {
 const codeStarConnectionArn = process.env.CODESTAR_CONNECTION_ARN
   || 'arn:aws:codeconnections:us-east-1:123456789012:connection/YOUR_CONNECTION_ID';
 
-// Optional context variables
-const enableMetricArchive = app.node.tryGetContext('enableMetricArchive') === 'true';
+// Metric archive enabled by default (DDR-047); disable with -c enableMetricArchive=false
+const enableMetricArchive = app.node.tryGetContext('enableMetricArchive') !== 'false';
 
 // =========================================================================
 // 1. Storage (STATEFUL — DDR-045: all S3 buckets + DynamoDB in one stack)

@@ -44,7 +44,7 @@ export interface OperationsMonitoringStackProps extends cdk.StackProps {
  * - 10 subscription filters (2 per Lambda for Firehose archival)
  * - Glue database + table for Athena querying
  * - ~45-widget CloudWatch dashboard
- * - (Optional) Metric Streams -> Firehose -> S3
+ * - Metric Streams -> Firehose -> S3 for long-term metric archival (DDR-047)
  *
  * This stack changes rarely and is slower to deploy (~5 min).
  * See also: OperationsAlertStack for alarms, SNS, and X-Ray.
@@ -720,8 +720,9 @@ export class OperationsMonitoringStack extends cdk.Stack {
     );
 
     // =========================================================================
-    // Optional: Long-Term Metric Storage (Metric Streams -> Firehose -> S3)
+    // Long-Term Metric Storage: Metric Streams -> Firehose -> S3 (DDR-047)
     // Bucket is from StorageStack (DDR-045); Firehose/MetricStream stay here (stateless).
+    // Enabled by default; disable with -c enableMetricArchive=false.
     // =========================================================================
     if (props.metricsArchiveBucket) {
       const metricsArchiveBucket = props.metricsArchiveBucket;

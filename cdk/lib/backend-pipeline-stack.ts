@@ -142,53 +142,88 @@ export class BackendPipelineStack extends cdk.Stack {
             commands: [
               'COMMIT=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c1-7)',
 
+              // --- Conditional build detection (DDR-047: skip unchanged images) ---
+              // Fetch the last successful build commit from SSM
+              'LAST_BUILD=$(aws ssm get-parameter --name /ai-social-media/last-build-commit --query "Parameter.Value" --output text 2>/dev/null || echo "")',
+              'BUILD_ALL=true',
+              // Per-Lambda flags (only used when shared code did NOT change)
+              'BUILD_API=false; BUILD_ENHANCE=false; BUILD_WEBHOOK=false',
+              'BUILD_THUMB=false; BUILD_SELECT=false; BUILD_VIDEO=false',
+
+              // Determine which images need rebuilding based on changed files
+              'if [ -n "$LAST_BUILD" ] && git rev-parse "$LAST_BUILD" >/dev/null 2>&1; then '
+                + 'CHANGED=$(git diff --name-only "$LAST_BUILD" HEAD); '
+                + 'echo "=== Changed files since last build ($LAST_BUILD) ==="; echo "$CHANGED"; '
+                + 'if echo "$CHANGED" | grep -qE "^(internal/|go\\.mod|go\\.sum|cmd/media-lambda/Dockerfile\\.)"; then '
+                  + 'echo "Shared code or Dockerfile changed — rebuilding ALL images"; BUILD_ALL=true; '
+                + 'else '
+                  + 'BUILD_ALL=false; '
+                  + 'echo "$CHANGED" | grep -q "^cmd/media-lambda/" && BUILD_API=true; '
+                  + 'echo "$CHANGED" | grep -q "^cmd/enhance-lambda/" && BUILD_ENHANCE=true; '
+                  + 'echo "$CHANGED" | grep -q "^cmd/webhook-lambda/" && BUILD_WEBHOOK=true; '
+                  + 'echo "$CHANGED" | grep -q "^cmd/thumbnail-lambda/" && BUILD_THUMB=true; '
+                  + 'echo "$CHANGED" | grep -q "^cmd/selection-lambda/" && BUILD_SELECT=true; '
+                  + 'echo "$CHANGED" | grep -q "^cmd/video-lambda/" && BUILD_VIDEO=true; '
+                  + 'echo "Selective build: API=$BUILD_API ENHANCE=$BUILD_ENHANCE WEBHOOK=$BUILD_WEBHOOK THUMB=$BUILD_THUMB SELECT=$BUILD_SELECT VIDEO=$BUILD_VIDEO"; '
+                + 'fi; '
+              + 'else echo "No previous build commit found — rebuilding ALL images"; fi',
+
               // --- Parallel Docker builds in 3 waves (DDR-047) ---
               // Helper function for building images with --cache-from
               'build_image() { local cmd=$1 df=$2 tags=$3 cache=$4; echo "Building $cmd..."; docker build --cache-from "$cache" --build-arg CMD_TARGET="$cmd" -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"; }',
 
               // Wave 1: Light images (fast, ~30s each, no ffmpeg)
-              'build_image media-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:api-$COMMIT -t $PRIVATE_LIGHT_URI:api-latest" "$PRIVATE_LIGHT_URI:api-latest" &',
-              'build_image enhance-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest -t $PUBLIC_LIGHT_URI:enhance-$COMMIT -t $PUBLIC_LIGHT_URI:enhance-latest" "$PRIVATE_LIGHT_URI:api-latest" &',
-              'build_image webhook-lambda Dockerfile.light "-t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest" "$PRIVATE_WEBHOOK_URI:webhook-latest" &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_API" = "true" ]) && touch /tmp/built-api && build_image media-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:api-$COMMIT -t $PRIVATE_LIGHT_URI:api-latest" "$PRIVATE_LIGHT_URI:api-latest" &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_ENHANCE" = "true" ]) && touch /tmp/built-enhance && build_image enhance-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest -t $PUBLIC_LIGHT_URI:enhance-$COMMIT -t $PUBLIC_LIGHT_URI:enhance-latest" "$PRIVATE_LIGHT_URI:api-latest" &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_WEBHOOK" = "true" ]) && touch /tmp/built-webhook && build_image webhook-lambda Dockerfile.light "-t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest" "$PRIVATE_WEBHOOK_URI:webhook-latest" &',
               'wait',
 
               // Wave 2: Heavy images (slower, ~60-90s each, includes ffmpeg)
-              'build_image thumbnail-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest -t $PUBLIC_HEAVY_URI:thumb-$COMMIT -t $PUBLIC_HEAVY_URI:thumb-latest" "$PRIVATE_HEAVY_URI:select-latest" &',
-              'build_image selection-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest" "$PRIVATE_HEAVY_URI:select-latest" &',
-              'build_image video-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_THUMB" = "true" ]) && touch /tmp/built-thumb && build_image thumbnail-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest -t $PUBLIC_HEAVY_URI:thumb-$COMMIT -t $PUBLIC_HEAVY_URI:thumb-latest" "$PRIVATE_HEAVY_URI:select-latest" &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_SELECT" = "true" ]) && touch /tmp/built-select && build_image selection-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest" "$PRIVATE_HEAVY_URI:select-latest" &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_VIDEO" = "true" ]) && touch /tmp/built-video && build_image video-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" &',
               'wait',
+
+              // Log build summary
+              'echo "=== Build summary ==="; for img in api enhance webhook thumb select video; do [ -f /tmp/built-$img ] && echo "  $img: BUILT" || echo "  $img: SKIPPED (unchanged)"; done',
             ],
           },
           post_build: {
             commands: [
-              // Push all images in parallel (DDR-047)
-              'echo "Pushing all images in parallel..."',
-              // ECR Private: light images
-              'docker push $PRIVATE_LIGHT_URI:api-$COMMIT &',
-              'docker push $PRIVATE_LIGHT_URI:api-latest &',
-              'docker push $PRIVATE_LIGHT_URI:enhance-$COMMIT &',
-              'docker push $PRIVATE_LIGHT_URI:enhance-latest &',
-              // ECR Private: heavy images
-              'docker push $PRIVATE_HEAVY_URI:select-$COMMIT &',
-              'docker push $PRIVATE_HEAVY_URI:select-latest &',
-              'docker push $PRIVATE_HEAVY_URI:thumb-$COMMIT &',
-              'docker push $PRIVATE_HEAVY_URI:thumb-latest &',
-              'docker push $PRIVATE_HEAVY_URI:video-$COMMIT &',
-              'docker push $PRIVATE_HEAVY_URI:video-latest &',
-              // ECR Private: webhook (DDR-044)
-              'docker push $PRIVATE_WEBHOOK_URI:webhook-$COMMIT &',
-              'docker push $PRIVATE_WEBHOOK_URI:webhook-latest &',
-              // ECR Public images (for distribution, DDR-041)
-              'docker push $PUBLIC_LIGHT_URI:enhance-$COMMIT &',
-              'docker push $PUBLIC_LIGHT_URI:enhance-latest &',
-              'docker push $PUBLIC_HEAVY_URI:thumb-$COMMIT &',
-              'docker push $PUBLIC_HEAVY_URI:thumb-latest &',
-              'docker push $PUBLIC_HEAVY_URI:video-$COMMIT &',
-              'docker push $PUBLIC_HEAVY_URI:video-latest &',
+              // Push only images that were built (DDR-047: conditional builds)
+              'echo "Pushing built images in parallel..."',
+              // ECR Private: light images (only if built)
+              '[ -f /tmp/built-api ] && docker push $PRIVATE_LIGHT_URI:api-$COMMIT &',
+              '[ -f /tmp/built-api ] && docker push $PRIVATE_LIGHT_URI:api-latest &',
+              '[ -f /tmp/built-enhance ] && docker push $PRIVATE_LIGHT_URI:enhance-$COMMIT &',
+              '[ -f /tmp/built-enhance ] && docker push $PRIVATE_LIGHT_URI:enhance-latest &',
+              // ECR Private: heavy images (only if built)
+              '[ -f /tmp/built-select ] && docker push $PRIVATE_HEAVY_URI:select-$COMMIT &',
+              '[ -f /tmp/built-select ] && docker push $PRIVATE_HEAVY_URI:select-latest &',
+              '[ -f /tmp/built-thumb ] && docker push $PRIVATE_HEAVY_URI:thumb-$COMMIT &',
+              '[ -f /tmp/built-thumb ] && docker push $PRIVATE_HEAVY_URI:thumb-latest &',
+              '[ -f /tmp/built-video ] && docker push $PRIVATE_HEAVY_URI:video-$COMMIT &',
+              '[ -f /tmp/built-video ] && docker push $PRIVATE_HEAVY_URI:video-latest &',
+              // ECR Private: webhook (only if built, DDR-044)
+              '[ -f /tmp/built-webhook ] && docker push $PRIVATE_WEBHOOK_URI:webhook-$COMMIT &',
+              '[ -f /tmp/built-webhook ] && docker push $PRIVATE_WEBHOOK_URI:webhook-latest &',
+              // ECR Public images (only if built, DDR-041)
+              '[ -f /tmp/built-enhance ] && docker push $PUBLIC_LIGHT_URI:enhance-$COMMIT &',
+              '[ -f /tmp/built-enhance ] && docker push $PUBLIC_LIGHT_URI:enhance-latest &',
+              '[ -f /tmp/built-thumb ] && docker push $PUBLIC_HEAVY_URI:thumb-$COMMIT &',
+              '[ -f /tmp/built-thumb ] && docker push $PUBLIC_HEAVY_URI:thumb-latest &',
+              '[ -f /tmp/built-video ] && docker push $PUBLIC_HEAVY_URI:video-$COMMIT &',
+              '[ -f /tmp/built-video ] && docker push $PUBLIC_HEAVY_URI:video-latest &',
               'wait',
 
-              // Write image URIs for deploy stage — Lambda requires ECR Private URIs
-              `echo '{"apiImage":"'$PRIVATE_LIGHT_URI:api-$COMMIT'","enhanceImage":"'$PRIVATE_LIGHT_URI:enhance-$COMMIT'","thumbImage":"'$PRIVATE_HEAVY_URI:thumb-$COMMIT'","selectImage":"'$PRIVATE_HEAVY_URI:select-$COMMIT'","videoImage":"'$PRIVATE_HEAVY_URI:video-$COMMIT'","webhookImage":"'$PRIVATE_WEBHOOK_URI:webhook-$COMMIT'"}' > imageDetail.json`,
+              // Write image URIs for deploy stage — use new tag if built, :latest if skipped
+              'API_TAG=$([ -f /tmp/built-api ] && echo "api-$COMMIT" || echo "api-latest")',
+              'ENHANCE_TAG=$([ -f /tmp/built-enhance ] && echo "enhance-$COMMIT" || echo "enhance-latest")',
+              'THUMB_TAG=$([ -f /tmp/built-thumb ] && echo "thumb-$COMMIT" || echo "thumb-latest")',
+              'SELECT_TAG=$([ -f /tmp/built-select ] && echo "select-$COMMIT" || echo "select-latest")',
+              'VIDEO_TAG=$([ -f /tmp/built-video ] && echo "video-$COMMIT" || echo "video-latest")',
+              'WEBHOOK_TAG=$([ -f /tmp/built-webhook ] && echo "webhook-$COMMIT" || echo "webhook-latest")',
+              `echo '{"apiImage":"'$PRIVATE_LIGHT_URI:$API_TAG'","enhanceImage":"'$PRIVATE_LIGHT_URI:$ENHANCE_TAG'","thumbImage":"'$PRIVATE_HEAVY_URI:$THUMB_TAG'","selectImage":"'$PRIVATE_HEAVY_URI:$SELECT_TAG'","videoImage":"'$PRIVATE_HEAVY_URI:$VIDEO_TAG'","webhookImage":"'$PRIVATE_WEBHOOK_URI:$WEBHOOK_TAG'"}' > imageDetail.json`,
             ],
           },
         },
@@ -251,6 +286,14 @@ export class BackendPipelineStack extends cdk.Stack {
       new iam.PolicyStatement({
         actions: ['sts:GetServiceBearerToken'],
         resources: ['*'],
+      }),
+    );
+
+    // SSM read permission for conditional builds — fetch last build commit (DDR-047)
+    backendBuild.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['ssm:GetParameter'],
+        resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/last-build-commit`],
       }),
     );
 
@@ -329,6 +372,10 @@ export class BackendPipelineStack extends cdk.Stack {
             `aws lambda wait function-updated --function-name ${props.selectionProcessor.functionName}`,
             `aws lambda wait function-updated --function-name ${props.videoProcessor.functionName}`,
             `aws lambda wait function-updated --function-name ${props.webhookHandler.functionName}`,
+
+            // Save successful build commit to SSM for conditional builds (DDR-047)
+            'export FULL_COMMIT=$(python3 -c "import json; d=json.load(open(\'imageDetail.json\')); uri=d[\'apiImage\']; print(uri.split(\':\')[-1].split(\'-\')[-1])" 2>/dev/null || echo "")',
+            'aws ssm put-parameter --name /ai-social-media/last-build-commit --value "$CODEBUILD_RESOLVED_SOURCE_VERSION" --type String --overwrite',
           ],
         },
       },
@@ -346,6 +393,14 @@ export class BackendPipelineStack extends cdk.Stack {
           props.videoProcessor.functionArn,
           props.webhookHandler.functionArn,
         ],
+      }),
+    );
+
+    // SSM write permission for conditional builds — save last build commit (DDR-047)
+    deployProject.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['ssm:PutParameter'],
+        resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/last-build-commit`],
       }),
     );
 
