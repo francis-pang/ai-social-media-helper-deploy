@@ -29,6 +29,8 @@ export interface BackendPipelineStackProps extends cdk.StackProps {
   webhookHandler: lambda.IFunction;
   /** CodeStar connection ARN (DDR-028: parameterized, not hardcoded) */
   codeStarConnectionArn: string;
+  /** Pipeline artifacts S3 bucket (from StorageStack — DDR-045: stateful/stateless split) */
+  artifactBucket: s3.IBucket;
 }
 
 /**
@@ -54,21 +56,8 @@ export class BackendPipelineStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: BackendPipelineStackProps) {
     super(scope, id, props);
 
-    // --- Artifact Bucket ---
-    const artifactBucket = new s3.Bucket(this, 'ArtifactBucket', {
-      bucketName: `ai-social-media-be-artifacts-${this.account}`,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      versioned: false,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-      lifecycleRules: [
-        {
-          expiration: cdk.Duration.days(7),
-          id: 'expire-artifacts-7d',
-        },
-      ],
-    });
+    // Artifact bucket from StorageStack (DDR-045: stateful/stateless split)
+    const artifactBucket = props.artifactBucket;
 
     // --- Artifacts ---
     const sourceOutput = new codepipeline.Artifact('SourceOutput');
@@ -394,9 +383,6 @@ export class BackendPipelineStack extends cdk.Stack {
       description: 'Backend CodePipeline name',
     });
 
-    new cdk.CfnOutput(this, 'ArtifactBucketName', {
-      value: artifactBucket.bucketName,
-      description: 'Backend pipeline artifacts S3 bucket name',
-    });
+    // Artifact bucket output moved to StorageStack (DDR-045)
   }
 }

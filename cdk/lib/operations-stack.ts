@@ -39,8 +39,10 @@ export interface OperationsStackProps extends cdk.StackProps {
   cloudFrontDomain?: string;
   /** Email for alarm notifications (optional, pass via -c alertEmail=...) */
   alertEmail?: string;
-  /** Enable long-term metric archival via Metric Streams (optional, pass via -c enableMetricArchive=true) */
-  enableMetricArchive?: boolean;
+  /** Log archive S3 bucket (from StorageStack — DDR-045: stateful/stateless split) */
+  logArchiveBucket: s3.IBucket;
+  /** Metrics archive S3 bucket (from StorageStack — DDR-045: optional, stateful/stateless split) */
+  metricsArchiveBucket?: s3.IBucket;
 }
 
 /**
@@ -75,39 +77,8 @@ export class OperationsStack extends cdk.Stack {
       );
     }
 
-    // =========================================================================
-    // S3 Log Archive Bucket (tiered lifecycle)
-    // =========================================================================
-    const logArchiveBucket = new s3.Bucket(this, 'LogArchive', {
-      bucketName: `ai-social-media-logs-archive-${this.account}`,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-      lifecycleRules: [
-        {
-          id: 'info-and-above-tiering',
-          prefix: 'logs/info-and-above/',
-          transitions: [
-            {
-              storageClass: s3.StorageClass.GLACIER,
-              transitionAfter: cdk.Duration.days(30),
-            },
-          ],
-          expiration: cdk.Duration.days(395), // 30 + 365
-        },
-        {
-          id: 'debug-tiering',
-          prefix: 'logs/debug/',
-          transitions: [
-            {
-              storageClass: s3.StorageClass.GLACIER,
-              transitionAfter: cdk.Duration.days(14),
-            },
-          ],
-          expiration: cdk.Duration.days(379), // 14 + 365
-        },
-      ],
-    });
+    // Log archive bucket from StorageStack (DDR-045: stateful/stateless split)
+    const logArchiveBucket = props.logArchiveBucket;
 
     // =========================================================================
     // Firehose Delivery Streams for Log Archival
@@ -901,29 +872,10 @@ export class OperationsStack extends cdk.Stack {
 
     // =========================================================================
     // Optional: Long-Term Metric Storage (Metric Streams -> Firehose -> S3)
+    // Bucket is from StorageStack (DDR-045); Firehose/MetricStream stay here (stateless).
     // =========================================================================
-    if (props.enableMetricArchive) {
-      const metricsArchiveBucket = new s3.Bucket(this, 'MetricsArchive', {
-        bucketName: `ai-social-media-metrics-archive-${this.account}`,
-        blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-        encryption: s3.BucketEncryption.S3_MANAGED,
-        removalPolicy: cdk.RemovalPolicy.RETAIN,
-        lifecycleRules: [
-          {
-            id: 'metrics-tiering',
-            transitions: [
-              {
-                storageClass: s3.StorageClass.INFREQUENT_ACCESS,
-                transitionAfter: cdk.Duration.days(90),
-              },
-              {
-                storageClass: s3.StorageClass.GLACIER,
-                transitionAfter: cdk.Duration.days(365),
-              },
-            ],
-          },
-        ],
-      });
+    if (props.metricsArchiveBucket) {
+      const metricsArchiveBucket = props.metricsArchiveBucket;
 
       const metricsFirehoseRole = new iam.Role(this, 'MetricsFirehoseRole', {
         assumedBy: new iam.ServicePrincipal('firehose.amazonaws.com'),
@@ -977,10 +929,7 @@ export class OperationsStack extends cdk.Stack {
       description: 'SNS topic ARN for alarm notifications',
     });
 
-    new cdk.CfnOutput(this, 'LogArchiveBucketName', {
-      value: logArchiveBucket.bucketName,
-      description: 'S3 bucket for archived logs (queryable via Athena)',
-    });
+    // Log archive bucket output moved to StorageStack (DDR-045)
 
     new cdk.CfnOutput(this, 'DashboardUrl', {
       value: `https://${this.region}.console.aws.amazon.com/cloudwatch/home?region=${this.region}#dashboards:name=AiSocialMediaDashboard`,

@@ -21,10 +21,23 @@ const env: cdk.Environment = {
 const codeStarConnectionArn = process.env.CODESTAR_CONNECTION_ARN
   || 'arn:aws:codeconnections:us-east-1:123456789012:connection/YOUR_CONNECTION_ID';
 
-// 1. Storage: S3 media bucket (24h lifecycle) + DynamoDB session state (DDR-035)
-const storage = new StorageStack(app, 'AiSocialMediaStorage', { env });
+// Optional context variables
+const enableMetricArchive = app.node.tryGetContext('enableMetricArchive') === 'true';
 
-// 2. Backend: 5 Lambdas + API Gateway + Cognito + 2 ECR repos + 2 Step Functions (DDR-035)
+// =========================================================================
+// 1. Storage (STATEFUL — DDR-045: all S3 buckets + DynamoDB in one stack)
+// =========================================================================
+// This stack is termination-protected and rarely changes. All stateful
+// resources live here so stateless stacks can be freely destroyed/redeployed
+// without orphaning S3 buckets.
+const storage = new StorageStack(app, 'AiSocialMediaStorage', {
+  env,
+  enableMetricArchive,
+});
+
+// =========================================================================
+// 2. Backend (STATELESS): 5 Lambdas + API Gateway + Cognito + 2 ECR repos + 2 Step Functions (DDR-035)
+// =========================================================================
 const backend = new BackendStack(app, 'AiSocialMediaBackend', {
   env,
   mediaBucket: storage.mediaBucket,
@@ -32,31 +45,44 @@ const backend = new BackendStack(app, 'AiSocialMediaBackend', {
 });
 backend.addDependency(storage);
 
-// 3. Frontend: S3 + CloudFront with OAC, security headers, origin-verify, and /api/* proxy
+// =========================================================================
+// 3. Frontend (STATELESS): CloudFront with OAC, security headers, origin-verify, /api/* proxy
+// =========================================================================
+// S3 bucket name passed as string to avoid cross-stack OAC cycle (DDR-045).
+// FrontendStack imports the bucket by name and manages the OAC bucket policy locally.
 const frontend = new FrontendStack(app, 'AiSocialMediaFrontend', {
   env,
   apiEndpoint: backend.httpApi.apiEndpoint,
   originVerifySecret: cdk.Fn.select(2, cdk.Fn.split('/', backend.stackId)),
+  frontendBucketName: storage.frontendBucket.bucketName,
 });
 frontend.addDependency(backend);
+frontend.addDependency(storage); // Bucket must exist before CloudFront OAC (DDR-045)
 
-// 4. Frontend Pipeline: Preact SPA build -> S3 + CloudFront invalidation (DDR-035)
+// =========================================================================
+// 4. Frontend Pipeline (STATELESS): Preact SPA build -> S3 + CloudFront invalidation (DDR-035)
+// =========================================================================
+// Artifact bucket comes from StorageStack (DDR-045)
 const frontendPipeline = new FrontendPipelineStack(app, 'AiSocialMediaFrontendPipeline', {
   env,
-  frontendBucket: frontend.frontendBucket,
+  frontendBucket: storage.frontendBucket,
   distribution: frontend.distribution,
   codeStarConnectionArn,
   cognitoUserPoolId: backend.userPool.userPoolId,
   cognitoClientId: backend.userPoolClient.userPoolClientId,
+  artifactBucket: storage.feArtifactBucket,
 });
 frontendPipeline.addDependency(frontend);
 
-// 5. Webhook: Dedicated CloudFront + API Gateway + Lambda for Meta webhooks (DDR-044)
+// =========================================================================
+// 5. Webhook (STATELESS): Dedicated CloudFront + API Gateway + Lambda for Meta webhooks (DDR-044)
+// =========================================================================
 const webhook = new WebhookStack(app, 'AiSocialMediaWebhook', { env });
 
-// 6. Backend Pipeline: 6 Docker builds -> 6 Lambda updates (DDR-035, DDR-041, DDR-044)
-//    2 images -> ECR Private (API, Selection), 3 images -> ECR Public (Enhancement, Thumbnail, Video)
-//    1 image -> ECR Private Webhook
+// =========================================================================
+// 6. Backend Pipeline (STATELESS): 6 Docker builds -> 6 Lambda updates (DDR-035, DDR-041, DDR-044)
+// =========================================================================
+// Artifact bucket comes from StorageStack (DDR-045)
 const backendPipeline = new BackendPipelineStack(app, 'AiSocialMediaBackendPipeline', {
   env,
   lightEcrRepo: backend.lightEcrRepo,
@@ -71,11 +97,15 @@ const backendPipeline = new BackendPipelineStack(app, 'AiSocialMediaBackendPipel
   webhookEcrRepo: webhook.webhookEcrRepo,
   webhookHandler: webhook.webhookHandler,
   codeStarConnectionArn,
+  artifactBucket: storage.beArtifactBucket,
 });
 backendPipeline.addDependency(backend);
 backendPipeline.addDependency(webhook);
 
-// 7. Operations: Alarms, dashboard, log archival, X-Ray, metric filters
+// =========================================================================
+// 7. Operations (STATELESS): Alarms, dashboard, log archival, X-Ray, metric filters
+// =========================================================================
+// Log/metrics archive buckets come from StorageStack (DDR-045)
 const operations = new OperationsStack(app, 'AiSocialMediaOperations', {
   env,
   lambdas: [
@@ -91,7 +121,8 @@ const operations = new OperationsStack(app, 'AiSocialMediaOperations', {
   sessionsTable: storage.sessionsTable,
   mediaBucket: storage.mediaBucket,
   alertEmail: app.node.tryGetContext('alertEmail'),
-  enableMetricArchive: app.node.tryGetContext('enableMetricArchive') === 'true',
+  logArchiveBucket: storage.logArchiveBucket,
+  metricsArchiveBucket: storage.metricsArchiveBucket,
 });
 operations.addDependency(backend);
 operations.addDependency(storage);

@@ -18,6 +18,8 @@ export interface FrontendPipelineStackProps extends cdk.StackProps {
   cognitoUserPoolId: string;
   /** Cognito User Pool Client ID — passed to frontend build as VITE_COGNITO_CLIENT_ID */
   cognitoClientId: string;
+  /** Pipeline artifacts S3 bucket (from StorageStack — DDR-045: stateful/stateless split) */
+  artifactBucket: s3.IBucket;
 }
 
 /**
@@ -36,21 +38,8 @@ export class FrontendPipelineStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: FrontendPipelineStackProps) {
     super(scope, id, props);
 
-    // --- Artifact Bucket ---
-    const artifactBucket = new s3.Bucket(this, 'ArtifactBucket', {
-      bucketName: `ai-social-media-fe-artifacts-${this.account}`,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      versioned: false,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-      lifecycleRules: [
-        {
-          expiration: cdk.Duration.days(7),
-          id: 'expire-artifacts-7d',
-        },
-      ],
-    });
+    // Artifact bucket from StorageStack (DDR-045: stateful/stateless split)
+    const artifactBucket = props.artifactBucket;
 
     // --- Artifacts ---
     const sourceOutput = new codepipeline.Artifact('SourceOutput');

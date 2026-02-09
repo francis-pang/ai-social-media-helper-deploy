@@ -9,32 +9,39 @@ export interface FrontendStackProps extends cdk.StackProps {
   apiEndpoint: string;
   /** Origin-verify shared secret — CloudFront sends this header to API Gateway (DDR-028) */
   originVerifySecret: string;
+  /**
+   * Frontend S3 bucket name (from StorageStack — DDR-045: stateful/stateless split).
+   * Passed as a string to avoid cross-stack OAC cycle (bucket policy ↔ distribution).
+   * FrontendStack imports the bucket locally and manages the OAC bucket policy.
+   */
+  frontendBucketName: string;
 }
 
 /**
- * FrontendStack creates S3 + CloudFront for hosting the Preact SPA.
+ * FrontendStack creates CloudFront for hosting the Preact SPA.
  *
- * - S3 bucket is fully private (CloudFront OAC only)
+ * The S3 bucket is owned by StorageStack (DDR-045: stateful/stateless split).
+ * This stack imports the bucket by name and manages the OAC bucket policy locally
+ * to avoid a cross-stack cyclic dependency.
+ *
  * - CloudFront serves with HTTPS redirect, security headers, and SPA routing
  * - /api/* requests are proxied to API Gateway (same-origin, no CORS needed)
  * - Hashed assets (/assets/*) cached for 1 year; index.html cached for 5 minutes
  */
 export class FrontendStack extends cdk.Stack {
   public readonly distribution: cloudfront.Distribution;
-  public readonly frontendBucket: s3.Bucket;
+  public readonly frontendBucket: s3.IBucket;
 
   constructor(scope: Construct, id: string, props: FrontendStackProps) {
     super(scope, id, props);
 
-    // --- S3 Bucket (private, OAC-only access) ---
-    this.frontendBucket = new s3.Bucket(this, 'FrontendAssets', {
-      bucketName: `ai-social-media-frontend-${this.account}`,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      versioned: false,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      autoDeleteObjects: true,
-    });
+    // Import bucket by name — avoids cross-stack OAC cycle (DDR-045)
+    // The bucket is created in StorageStack with autoDeleteObjects: true.
+    // Importing it here means addToResourcePolicy() is a no-op, so we
+    // create the OAC bucket policy manually below.
+    this.frontendBucket = s3.Bucket.fromBucketName(
+      this, 'FrontendBucket', props.frontendBucketName,
+    );
 
     // --- Security Headers Policy ---
     // Mirrors the headers set in cmd/media-web/main.go lines 152-156,
@@ -87,6 +94,8 @@ export class FrontendStack extends cdk.Stack {
     });
 
     // --- CloudFront Distribution ---
+    // S3 origin with OAC — bucket policy auto-add is a no-op for imported buckets,
+    // so we add the policy manually below.
     const s3Origin = origins.S3BucketOrigin.withOriginAccessControl(this.frontendBucket);
 
     // API Gateway origin: extract domain from endpoint URL (https://xxx.execute-api...).
@@ -139,6 +148,36 @@ export class FrontendStack extends cdk.Stack {
       ],
     });
 
+    // --- OAC Bucket Policy (manual, avoids cross-stack cycle — DDR-045) ---
+    // Since the bucket is imported (fromBucketName), CDK's auto-policy is skipped.
+    // We create the policy here so it lives in FrontendStack alongside the distribution,
+    // avoiding the StorageStack ↔ FrontendStack cyclic dependency.
+    new s3.CfnBucketPolicy(this, 'FrontendBucketOACPolicy', {
+      bucket: props.frontendBucketName,
+      policyDocument: {
+        Version: '2012-10-17',
+        Statement: [
+          {
+            Sid: 'AllowCloudFrontOAC',
+            Effect: 'Allow',
+            Principal: { Service: 'cloudfront.amazonaws.com' },
+            Action: 's3:GetObject',
+            Resource: cdk.Fn.join('', ['arn:aws:s3:::', props.frontendBucketName, '/*']),
+            Condition: {
+              StringEquals: {
+                'AWS:SourceArn': cdk.Fn.join('', [
+                  'arn:aws:cloudfront::',
+                  this.account,
+                  ':distribution/',
+                  this.distribution.distributionId,
+                ]),
+              },
+            },
+          },
+        ],
+      },
+    });
+
     // --- Outputs ---
     new cdk.CfnOutput(this, 'DistributionDomainName', {
       value: this.distribution.distributionDomainName,
@@ -151,7 +190,7 @@ export class FrontendStack extends cdk.Stack {
     });
 
     new cdk.CfnOutput(this, 'FrontendBucketName', {
-      value: this.frontendBucket.bucketName,
+      value: props.frontendBucketName,
       description: 'Frontend S3 bucket name',
     });
   }
