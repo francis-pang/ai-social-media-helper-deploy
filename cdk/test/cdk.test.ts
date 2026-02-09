@@ -33,6 +33,8 @@ describe('AiSocialMedia Infrastructure', () => {
     env,
     lightEcrRepo: backend.lightEcrRepo,
     heavyEcrRepo: backend.heavyEcrRepo,
+    publicLightRepoName: 'ai-social-media-lambda-light',
+    publicHeavyRepoName: 'ai-social-media-lambda-heavy',
     apiHandler: backend.apiHandler,
     thumbnailProcessor: backend.thumbnailProcessor,
     selectionProcessor: backend.selectionProcessor,
@@ -121,7 +123,7 @@ describe('AiSocialMedia Infrastructure', () => {
     template.resourceCountIs('AWS::Lambda::Function', 5);
   });
 
-  test('BackendStack creates 2 ECR repositories', () => {
+  test('BackendStack creates 2 ECR Private repositories (DDR-041)', () => {
     const template = Template.fromStack(backend);
 
     template.hasResourceProperties('AWS::ECR::Repository', {
@@ -133,6 +135,20 @@ describe('AiSocialMedia Infrastructure', () => {
     });
 
     template.resourceCountIs('AWS::ECR::Repository', 2);
+  });
+
+  test('BackendStack creates 2 ECR Public repositories (DDR-041)', () => {
+    const template = Template.fromStack(backend);
+
+    template.hasResourceProperties('AWS::ECR::PublicRepository', {
+      RepositoryName: 'ai-social-media-lambda-light',
+    });
+
+    template.hasResourceProperties('AWS::ECR::PublicRepository', {
+      RepositoryName: 'ai-social-media-lambda-heavy',
+    });
+
+    template.resourceCountIs('AWS::ECR::PublicRepository', 2);
   });
 
   test('BackendStack creates 2 Step Functions state machines', () => {

@@ -27,10 +27,15 @@ export interface BackendStackProps extends cdk.StackProps {
  *
  * Components:
  * - 5 Lambda functions (API, Thumbnail, Selection, Enhancement, Video)
- * - 2 ECR repositories (light: no ffmpeg, heavy: with ffmpeg)
+ * - 2 ECR Private repositories (API, Selection — proprietary code)
+ * - 2 ECR Public repositories (Enhancement, Thumbnail+Video — generic code)
  * - 2 Step Functions state machines (SelectionPipeline, EnhancementPipeline)
  * - API Gateway HTTP API with Cognito JWT auth
  * - Cognito User Pool (no public signup)
+ *
+ * Container Registry Strategy (DDR-041):
+ * - ECR Private: API handler (auth/prompts), Selection processor (proprietary algorithms)
+ * - ECR Public: Enhancement processor (generic), Thumbnail + Video processors (generic ffmpeg)
  *
  * Security (DDR-028):
  * - Cognito User Pool with JWT authorizer (no public signup)
@@ -52,9 +57,13 @@ export class BackendStack extends cdk.Stack {
   public readonly enhancementProcessor: lambda.Function;
   public readonly videoProcessor: lambda.Function;
 
-  // ECR repositories
+  // ECR Private repositories (proprietary code — DDR-041)
   public readonly lightEcrRepo: ecr.Repository;
   public readonly heavyEcrRepo: ecr.Repository;
+
+  // ECR Public repositories (generic code — DDR-041)
+  public readonly publicLightEcrRepo: ecr.CfnPublicRepository;
+  public readonly publicHeavyEcrRepo: ecr.CfnPublicRepository;
 
   // Step Functions
   public readonly selectionPipeline: sfn.StateMachine;
@@ -97,19 +106,25 @@ export class BackendStack extends cdk.Stack {
     });
 
     // =========================================================================
-    // ECR Repositories (DDR-035)
+    // ECR Repositories (DDR-035, DDR-041)
     // =========================================================================
-    // Two repos maximize Docker layer deduplication:
-    // - Light: API + Enhancement images share AL2023 base layer
-    // - Heavy: Thumbnail + Selection + Video share AL2023 base + ffmpeg layers
+    // Hybrid registry strategy (DDR-041):
+    // - ECR Private: proprietary code (API auth/prompts, Selection algorithms)
+    // - ECR Public: generic utilities (Enhancement passthrough, Thumbnail/Video ffmpeg)
+    //
+    // Within each tier, light vs heavy maximizes Docker layer deduplication (DDR-035):
+    // - Light: AL2023 base only (~40 MB shared)
+    // - Heavy: AL2023 base + ffmpeg (~160 MB shared)
+
+    // --- ECR Private (proprietary code) ---
     this.lightEcrRepo = new ecr.Repository(this, 'LightImageRepo', {
       repositoryName: 'ai-social-media-lambda-light',
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
       lifecycleRules: [
         {
-          maxImageCount: 10, // 5 tags x 2 Lambda functions
-          description: 'Keep only the last 10 images (5 per Lambda)',
+          maxImageCount: 1, // Keep only the latest image (DDR-041)
+          description: 'Keep only the latest image',
         },
       ],
     });
@@ -120,10 +135,31 @@ export class BackendStack extends cdk.Stack {
       emptyOnDelete: true,
       lifecycleRules: [
         {
-          maxImageCount: 15, // 5 tags x 3 Lambda functions
-          description: 'Keep only the last 15 images (5 per Lambda)',
+          maxImageCount: 1, // Keep only the latest image (DDR-041)
+          description: 'Keep only the latest image',
         },
       ],
+    });
+
+    // --- ECR Public (generic, non-proprietary code) ---
+    this.publicLightEcrRepo = new ecr.CfnPublicRepository(this, 'PublicLightImageRepo', {
+      repositoryName: 'ai-social-media-lambda-light',
+      repositoryCatalogData: {
+        usageText: 'Generic Lambda images (no ffmpeg) for AI social media helper.',
+        aboutText: 'Light Lambda container images built on AL2023. Contains Go binaries without ffmpeg.',
+        operatingSystems: ['Linux'],
+        architectures: ['x86-64'],
+      },
+    });
+
+    this.publicHeavyEcrRepo = new ecr.CfnPublicRepository(this, 'PublicHeavyImageRepo', {
+      repositoryName: 'ai-social-media-lambda-heavy',
+      repositoryCatalogData: {
+        usageText: 'Generic Lambda images (with ffmpeg) for AI social media helper.',
+        aboutText: 'Heavy Lambda container images built on AL2023 with ffmpeg/ffprobe for media processing.',
+        operatingSystems: ['Linux'],
+        architectures: ['x86-64'],
+      },
     });
 
     // =========================================================================
@@ -476,12 +512,22 @@ export class BackendStack extends cdk.Stack {
 
     new cdk.CfnOutput(this, 'LightEcrRepoUri', {
       value: this.lightEcrRepo.repositoryUri,
-      description: 'ECR repository URI for light Lambda images (no ffmpeg)',
+      description: 'ECR Private repository URI for light Lambda images (API)',
     });
 
     new cdk.CfnOutput(this, 'HeavyEcrRepoUri', {
       value: this.heavyEcrRepo.repositoryUri,
-      description: 'ECR repository URI for heavy Lambda images (with ffmpeg)',
+      description: 'ECR Private repository URI for heavy Lambda images (Selection)',
+    });
+
+    new cdk.CfnOutput(this, 'PublicLightEcrRepoArn', {
+      value: this.publicLightEcrRepo.attrArn,
+      description: 'ECR Public repository ARN for light Lambda images (Enhancement)',
+    });
+
+    new cdk.CfnOutput(this, 'PublicHeavyEcrRepoArn', {
+      value: this.publicHeavyEcrRepo.attrArn,
+      description: 'ECR Public repository ARN for heavy Lambda images (Thumbnail, Video)',
     });
 
     new cdk.CfnOutput(this, 'SelectionPipelineArn', {

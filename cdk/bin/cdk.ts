@@ -50,11 +50,14 @@ const frontendPipeline = new FrontendPipelineStack(app, 'AiSocialMediaFrontendPi
 });
 frontendPipeline.addDependency(frontend);
 
-// 5. Backend Pipeline: 5 Docker builds -> 5 Lambda updates (DDR-035)
+// 5. Backend Pipeline: 5 Docker builds -> 5 Lambda updates (DDR-035, DDR-041)
+//    2 images -> ECR Private (API, Selection), 3 images -> ECR Public (Enhancement, Thumbnail, Video)
 const backendPipeline = new BackendPipelineStack(app, 'AiSocialMediaBackendPipeline', {
   env,
   lightEcrRepo: backend.lightEcrRepo,
   heavyEcrRepo: backend.heavyEcrRepo,
+  publicLightRepoName: backend.publicLightEcrRepo.repositoryName!,
+  publicHeavyRepoName: backend.publicHeavyEcrRepo.repositoryName!,
   apiHandler: backend.apiHandler,
   thumbnailProcessor: backend.thumbnailProcessor,
   selectionProcessor: backend.selectionProcessor,
