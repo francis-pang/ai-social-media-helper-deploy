@@ -8,19 +8,23 @@ import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import { Construct } from 'constructs';
 
+export interface WebhookStackProps extends cdk.StackProps {
+  /** ECR Private repository for webhook Lambda image (from RegistryStack, DDR-046) */
+  webhookEcrRepo: ecr.IRepository;
+}
+
 /**
  * WebhookStack creates a fully isolated infrastructure for receiving
  * Meta/Instagram webhook notifications (DDR-044).
  *
  * Components:
- * - ECR Private repository for the webhook Lambda image
  * - Lightweight Lambda function (128 MB, 10s timeout)
  * - API Gateway HTTP API (no auth, server-to-server)
  * - CloudFront distribution (HTTPS, DDoS protection)
  *
- * This stack has NO dependencies on BackendStack, StorageStack, or
- * FrontendStack. The webhook Lambda only needs SSM read access for
- * the verify token and app secret.
+ * ECR repository is owned by RegistryStack (DDR-046). This stack depends
+ * on RegistryStack for the webhook ECR repo but has NO dependencies on
+ * BackendStack, StorageStack, or FrontendStack.
  *
  * Security model:
  * - No JWT auth (Meta cannot authenticate with Cognito)
@@ -29,32 +33,17 @@ import { Construct } from 'constructs';
  * - API Gateway throttling (10 burst / 5 steady)
  */
 export class WebhookStack extends cdk.Stack {
-  /** ECR repository for the webhook Lambda image (used by pipeline) */
-  public readonly webhookEcrRepo: ecr.IRepository;
   /** Webhook Lambda function (used by pipeline for deployment) */
   public readonly webhookHandler: lambda.Function;
 
-  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+  constructor(scope: Construct, id: string, props: WebhookStackProps) {
     super(scope, id, props);
 
     // =========================================================================
-    // ECR Repository (DDR-044)
-    // =========================================================================
-    // The ECR repo must be created before the first deploy (with an initial
-    // image pushed) because DockerImageFunction requires a valid image at
-    // creation time. Create it via:
-    //   aws ecr create-repository --repository-name ai-social-media-webhook
-    //   docker build --build-arg CMD_TARGET=webhook-lambda -t <uri>:webhook-latest -f cmd/media-lambda/Dockerfile.light .
-    //   docker push <uri>:webhook-latest
-    this.webhookEcrRepo = ecr.Repository.fromRepositoryName(
-      this, 'WebhookImageRepo', 'ai-social-media-webhook',
-    );
-
-    // =========================================================================
-    // Lambda Function (DDR-044: 128 MB, 10s, ECR Private)
+    // Lambda Function (DDR-044: 128 MB, 10s, ECR Private from RegistryStack DDR-046)
     // =========================================================================
     this.webhookHandler = new lambda.DockerImageFunction(this, 'WebhookHandler', {
-      code: lambda.DockerImageCode.fromEcr(this.webhookEcrRepo, { tagOrDigest: 'webhook-latest' }),
+      code: lambda.DockerImageCode.fromEcr(props.webhookEcrRepo, { tagOrDigest: 'webhook-latest' }),
       timeout: cdk.Duration.seconds(10),
       memorySize: 128,
       environment: {
@@ -142,9 +131,6 @@ export class WebhookStack extends cdk.Stack {
       description: 'Webhook Lambda function name',
     });
 
-    new cdk.CfnOutput(this, 'WebhookEcrRepoUri', {
-      value: this.webhookEcrRepo.repositoryUri,
-      description: 'Webhook ECR repository URI',
-    });
+    // ECR repo output is in RegistryStack (DDR-046)
   }
 }

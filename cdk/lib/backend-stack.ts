@@ -20,6 +20,14 @@ export interface BackendStackProps extends cdk.StackProps {
   sessionsTable: dynamodb.ITable;
   /** CloudFront distribution domain for CORS lockdown (DDR-028) */
   cloudFrontDomain?: string;
+  /** ECR Private light repository — API + Enhancement (from RegistryStack, DDR-046) */
+  lightEcrRepo: ecr.IRepository;
+  /** ECR Private heavy repository — Selection + Thumbnail + Video (from RegistryStack, DDR-046) */
+  heavyEcrRepo: ecr.IRepository;
+  /** ECR Public light repository (from RegistryStack, DDR-046) */
+  publicLightEcrRepo: ecr.CfnPublicRepository;
+  /** ECR Public heavy repository (from RegistryStack, DDR-046) */
+  publicHeavyEcrRepo: ecr.CfnPublicRepository;
 }
 
 /**
@@ -27,12 +35,11 @@ export interface BackendStackProps extends cdk.StackProps {
  *
  * Components:
  * - 5 Lambda functions (API, Thumbnail, Selection, Enhancement, Video)
- * - 2 ECR Private repositories (API, Selection — proprietary code)
- * - 2 ECR Public repositories (Enhancement, Thumbnail+Video — generic code)
  * - 2 Step Functions state machines (SelectionPipeline, EnhancementPipeline)
  * - API Gateway HTTP API with Cognito JWT auth
  * - Cognito User Pool (no public signup)
  *
+ * ECR repositories are owned by RegistryStack (DDR-046) and passed as props.
  * Container Registry Strategy (DDR-041):
  * - ECR Private: API handler (auth/prompts), Selection processor (proprietary algorithms)
  * - ECR Public: Enhancement processor (generic), Thumbnail + Video processors (generic ffmpeg)
@@ -57,11 +64,9 @@ export class BackendStack extends cdk.Stack {
   public readonly enhancementProcessor: lambda.Function;
   public readonly videoProcessor: lambda.Function;
 
-  // ECR Private repositories (proprietary code — DDR-041)
-  public readonly lightEcrRepo: ecr.Repository;
-  public readonly heavyEcrRepo: ecr.Repository;
-
-  // ECR Public repositories (generic code — DDR-041)
+  // ECR repositories (from RegistryStack — DDR-046)
+  public readonly lightEcrRepo: ecr.IRepository;
+  public readonly heavyEcrRepo: ecr.IRepository;
   public readonly publicLightEcrRepo: ecr.CfnPublicRepository;
   public readonly publicHeavyEcrRepo: ecr.CfnPublicRepository;
 
@@ -106,62 +111,12 @@ export class BackendStack extends cdk.Stack {
     });
 
     // =========================================================================
-    // ECR Repositories (DDR-035, DDR-041)
+    // ECR Repositories (from RegistryStack — DDR-046)
     // =========================================================================
-    // Hybrid registry strategy (DDR-041):
-    // - ECR Private: proprietary code (API auth/prompts, Selection algorithms)
-    // - ECR Public: generic utilities (Enhancement passthrough, Thumbnail/Video ffmpeg)
-    //
-    // Within each tier, light vs heavy maximizes Docker layer deduplication (DDR-035):
-    // - Light: AL2023 base only (~40 MB shared)
-    // - Heavy: AL2023 base + ffmpeg (~160 MB shared)
-
-    // --- ECR Private (proprietary code) ---
-    this.lightEcrRepo = new ecr.Repository(this, 'LightImageRepo', {
-      repositoryName: 'ai-social-media-lambda-light',
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      emptyOnDelete: true,
-      lifecycleRules: [
-        {
-          maxImageCount: 1, // Keep only the latest image (DDR-041)
-          description: 'Keep only the latest image',
-        },
-      ],
-    });
-
-    this.heavyEcrRepo = new ecr.Repository(this, 'HeavyImageRepo', {
-      repositoryName: 'ai-social-media-lambda-heavy',
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
-      emptyOnDelete: true,
-      lifecycleRules: [
-        {
-          maxImageCount: 1, // Keep only the latest image (DDR-041)
-          description: 'Keep only the latest image',
-        },
-      ],
-    });
-
-    // --- ECR Public (generic, non-proprietary code) ---
-    // CfnPublicRepository uses CloudFormation PascalCase for RepositoryCatalogData
-    this.publicLightEcrRepo = new ecr.CfnPublicRepository(this, 'PublicLightImageRepo', {
-      repositoryName: 'ai-social-media-lambda-light',
-      repositoryCatalogData: {
-        UsageText: 'Generic Lambda images (no ffmpeg) for AI social media helper.',
-        AboutText: 'Light Lambda container images built on AL2023. Contains Go binaries without ffmpeg.',
-        OperatingSystems: ['Linux'],
-        Architectures: ['x86-64'],
-      },
-    });
-
-    this.publicHeavyEcrRepo = new ecr.CfnPublicRepository(this, 'PublicHeavyImageRepo', {
-      repositoryName: 'ai-social-media-lambda-heavy',
-      repositoryCatalogData: {
-        UsageText: 'Generic Lambda images (with ffmpeg) for AI social media helper.',
-        AboutText: 'Heavy Lambda container images built on AL2023 with ffmpeg/ffprobe for media processing.',
-        OperatingSystems: ['Linux'],
-        Architectures: ['x86-64'],
-      },
-    });
+    this.lightEcrRepo = props.lightEcrRepo;
+    this.heavyEcrRepo = props.heavyEcrRepo;
+    this.publicLightEcrRepo = props.publicLightEcrRepo;
+    this.publicHeavyEcrRepo = props.publicHeavyEcrRepo;
 
     // =========================================================================
     // Origin Verify Secret (DDR-028 Problem 1)
@@ -171,10 +126,9 @@ export class BackendStack extends cdk.Stack {
     // =========================================================================
     // Lambda Functions (DDR-035)
     // =========================================================================
-    // All Lambdas use zip-based deployment initially. The CodePipeline
-    // (BackendPipelineStack) builds container images and updates each Lambda
-    // to use its specific image. This avoids requiring Docker locally for
-    // CDK deploys while letting the pipeline handle the container image lifecycle.
+    // All Lambdas reference ECR images from RegistryStack (DDR-046). The
+    // pipeline (BackendPipelineStack) builds and pushes images, then updates
+    // each Lambda to use its specific image tag.
 
     // Shared environment variables for all processing Lambdas
     const sharedEnv = {
@@ -484,25 +438,7 @@ export class BackendStack extends cdk.Stack {
       description: 'API Lambda function name',
     });
 
-    new cdk.CfnOutput(this, 'LightEcrRepoUri', {
-      value: this.lightEcrRepo.repositoryUri,
-      description: 'ECR Private repository URI for light Lambda images (API)',
-    });
-
-    new cdk.CfnOutput(this, 'HeavyEcrRepoUri', {
-      value: this.heavyEcrRepo.repositoryUri,
-      description: 'ECR Private repository URI for heavy Lambda images (Selection)',
-    });
-
-    new cdk.CfnOutput(this, 'PublicLightEcrRepoArn', {
-      value: this.publicLightEcrRepo.attrArn,
-      description: 'ECR Public repository ARN for light Lambda images (Enhancement)',
-    });
-
-    new cdk.CfnOutput(this, 'PublicHeavyEcrRepoArn', {
-      value: this.publicHeavyEcrRepo.attrArn,
-      description: 'ECR Public repository ARN for heavy Lambda images (Thumbnail, Video)',
-    });
+    // ECR repo outputs are in RegistryStack (DDR-046)
 
     new cdk.CfnOutput(this, 'SelectionPipelineArn', {
       value: this.selectionPipeline.stateMachineArn,

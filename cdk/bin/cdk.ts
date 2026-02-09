@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib/core';
 import { StorageStack } from '../lib/storage-stack';
+import { RegistryStack } from '../lib/registry-stack';
 import { FrontendStack } from '../lib/frontend-stack';
 import { BackendStack } from '../lib/backend-stack';
 import { FrontendPipelineStack } from '../lib/frontend-pipeline-stack';
@@ -36,17 +37,31 @@ const storage = new StorageStack(app, 'AiSocialMediaStorage', {
 });
 
 // =========================================================================
-// 2. Backend (STATELESS): 5 Lambdas + API Gateway + Cognito + 2 ECR repos + 2 Step Functions (DDR-035)
+// 2. Registry (DDR-046: all ECR repos in one stack, no Lambdas)
 // =========================================================================
+// Deploys before any application stack. Contains only ECR repositories,
+// breaking the chicken-and-egg dependency where DockerImageFunction requires
+// an image that the pipeline (which depends on the app stack) hasn't pushed yet.
+const registry = new RegistryStack(app, 'AiSocialMediaRegistry', { env });
+
+// =========================================================================
+// 3. Backend (STATELESS): 5 Lambdas + API Gateway + Cognito + 2 Step Functions (DDR-035)
+// =========================================================================
+// ECR repos come from RegistryStack (DDR-046)
 const backend = new BackendStack(app, 'AiSocialMediaBackend', {
   env,
   mediaBucket: storage.mediaBucket,
   sessionsTable: storage.sessionsTable,
+  lightEcrRepo: registry.lightEcrRepo,
+  heavyEcrRepo: registry.heavyEcrRepo,
+  publicLightEcrRepo: registry.publicLightEcrRepo,
+  publicHeavyEcrRepo: registry.publicHeavyEcrRepo,
 });
 backend.addDependency(storage);
+backend.addDependency(registry);
 
 // =========================================================================
-// 3. Frontend (STATELESS): CloudFront with OAC, security headers, origin-verify, /api/* proxy
+// 4. Frontend (STATELESS): CloudFront with OAC, security headers, origin-verify, /api/* proxy
 // =========================================================================
 // S3 bucket name passed as string to avoid cross-stack OAC cycle (DDR-045).
 // FrontendStack imports the bucket by name and manages the OAC bucket policy locally.
@@ -60,7 +75,7 @@ frontend.addDependency(backend);
 frontend.addDependency(storage); // Bucket must exist before CloudFront OAC (DDR-045)
 
 // =========================================================================
-// 4. Frontend Pipeline (STATELESS): Preact SPA build -> S3 + CloudFront invalidation (DDR-035)
+// 5. Frontend Pipeline (STATELESS): Preact SPA build -> S3 + CloudFront invalidation (DDR-035)
 // =========================================================================
 // Artifact bucket comes from StorageStack (DDR-045)
 const frontendPipeline = new FrontendPipelineStack(app, 'AiSocialMediaFrontendPipeline', {
@@ -75,26 +90,31 @@ const frontendPipeline = new FrontendPipelineStack(app, 'AiSocialMediaFrontendPi
 frontendPipeline.addDependency(frontend);
 
 // =========================================================================
-// 5. Webhook (STATELESS): Dedicated CloudFront + API Gateway + Lambda for Meta webhooks (DDR-044)
+// 6. Webhook (STATELESS): Dedicated CloudFront + API Gateway + Lambda for Meta webhooks (DDR-044)
 // =========================================================================
-const webhook = new WebhookStack(app, 'AiSocialMediaWebhook', { env });
+// ECR repo comes from RegistryStack (DDR-046)
+const webhook = new WebhookStack(app, 'AiSocialMediaWebhook', {
+  env,
+  webhookEcrRepo: registry.webhookEcrRepo,
+});
+webhook.addDependency(registry);
 
 // =========================================================================
-// 6. Backend Pipeline (STATELESS): 6 Docker builds -> 6 Lambda updates (DDR-035, DDR-041, DDR-044)
+// 7. Backend Pipeline (STATELESS): 6 Docker builds -> 6 Lambda updates (DDR-035, DDR-041, DDR-044)
 // =========================================================================
-// Artifact bucket comes from StorageStack (DDR-045)
+// ECR repos come from RegistryStack (DDR-046), artifact bucket from StorageStack (DDR-045)
 const backendPipeline = new BackendPipelineStack(app, 'AiSocialMediaBackendPipeline', {
   env,
-  lightEcrRepo: backend.lightEcrRepo,
-  heavyEcrRepo: backend.heavyEcrRepo,
-  publicLightRepoName: backend.publicLightEcrRepo.repositoryName!,
-  publicHeavyRepoName: backend.publicHeavyEcrRepo.repositoryName!,
+  lightEcrRepo: registry.lightEcrRepo,
+  heavyEcrRepo: registry.heavyEcrRepo,
+  publicLightRepoName: registry.publicLightEcrRepo.repositoryName!,
+  publicHeavyRepoName: registry.publicHeavyEcrRepo.repositoryName!,
   apiHandler: backend.apiHandler,
   thumbnailProcessor: backend.thumbnailProcessor,
   selectionProcessor: backend.selectionProcessor,
   enhancementProcessor: backend.enhancementProcessor,
   videoProcessor: backend.videoProcessor,
-  webhookEcrRepo: webhook.webhookEcrRepo,
+  webhookEcrRepo: registry.webhookEcrRepo,
   webhookHandler: webhook.webhookHandler,
   codeStarConnectionArn,
   artifactBucket: storage.beArtifactBucket,
@@ -103,7 +123,7 @@ backendPipeline.addDependency(backend);
 backendPipeline.addDependency(webhook);
 
 // =========================================================================
-// 7. Operations (STATELESS): Alarms, dashboard, log archival, X-Ray, metric filters
+// 8. Operations (STATELESS): Alarms, dashboard, log archival, X-Ray, metric filters
 // =========================================================================
 // Log/metrics archive buckets come from StorageStack (DDR-045)
 const operations = new OperationsStack(app, 'AiSocialMediaOperations', {

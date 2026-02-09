@@ -1,6 +1,7 @@
 import * as cdk from 'aws-cdk-lib/core';
 import { Template } from 'aws-cdk-lib/assertions';
 import { StorageStack } from '../lib/storage-stack';
+import { RegistryStack } from '../lib/registry-stack';
 import { FrontendStack } from '../lib/frontend-stack';
 import { BackendStack } from '../lib/backend-stack';
 import { FrontendPipelineStack } from '../lib/frontend-pipeline-stack';
@@ -13,10 +14,16 @@ describe('AiSocialMedia Infrastructure', () => {
 
   // DDR-045: StorageStack is the stateful stack — all S3 buckets + DynamoDB here
   const storage = new StorageStack(app, 'TestStorage', { env });
+  // DDR-046: RegistryStack owns all ECR repos — no Lambdas, deploys first
+  const registry = new RegistryStack(app, 'TestRegistry', { env });
   const backend = new BackendStack(app, 'TestBackend', {
     env,
     mediaBucket: storage.mediaBucket,
     sessionsTable: storage.sessionsTable,
+    lightEcrRepo: registry.lightEcrRepo,
+    heavyEcrRepo: registry.heavyEcrRepo,
+    publicLightEcrRepo: registry.publicLightEcrRepo,
+    publicHeavyEcrRepo: registry.publicHeavyEcrRepo,
   });
   const frontend = new FrontendStack(app, 'TestFrontend', {
     env,
@@ -33,11 +40,14 @@ describe('AiSocialMedia Infrastructure', () => {
     cognitoClientId: backend.userPoolClient.userPoolClientId,
     artifactBucket: storage.feArtifactBucket,
   });
-  const webhook = new WebhookStack(app, 'TestWebhook', { env });
+  const webhook = new WebhookStack(app, 'TestWebhook', {
+    env,
+    webhookEcrRepo: registry.webhookEcrRepo,
+  });
   const backendPipeline = new BackendPipelineStack(app, 'TestBackendPipeline', {
     env,
-    lightEcrRepo: backend.lightEcrRepo,
-    heavyEcrRepo: backend.heavyEcrRepo,
+    lightEcrRepo: registry.lightEcrRepo,
+    heavyEcrRepo: registry.heavyEcrRepo,
     publicLightRepoName: 'ai-social-media-lambda-light',
     publicHeavyRepoName: 'ai-social-media-lambda-heavy',
     apiHandler: backend.apiHandler,
@@ -45,7 +55,7 @@ describe('AiSocialMedia Infrastructure', () => {
     selectionProcessor: backend.selectionProcessor,
     enhancementProcessor: backend.enhancementProcessor,
     videoProcessor: backend.videoProcessor,
-    webhookEcrRepo: webhook.webhookEcrRepo,
+    webhookEcrRepo: registry.webhookEcrRepo,
     webhookHandler: webhook.webhookHandler,
     codeStarConnectionArn: 'arn:aws:codeconnections:us-east-1:123456789012:connection/test-connection-id',
     artifactBucket: storage.beArtifactBucket,
@@ -110,6 +120,47 @@ describe('AiSocialMedia Infrastructure', () => {
   });
 
   // =========================================================================
+  // RegistryStack (DDR-046: all ECR repos in one stack, no Lambdas)
+  // =========================================================================
+
+  test('RegistryStack creates 3 ECR Private repositories (DDR-046)', () => {
+    const template = Template.fromStack(registry);
+
+    template.hasResourceProperties('AWS::ECR::Repository', {
+      RepositoryName: 'ai-social-media-lambda-light',
+    });
+
+    template.hasResourceProperties('AWS::ECR::Repository', {
+      RepositoryName: 'ai-social-media-lambda-heavy',
+    });
+
+    template.hasResourceProperties('AWS::ECR::Repository', {
+      RepositoryName: 'ai-social-media-webhook',
+    });
+
+    template.resourceCountIs('AWS::ECR::Repository', 3);
+  });
+
+  test('RegistryStack creates 2 ECR Public repositories (DDR-046)', () => {
+    const template = Template.fromStack(registry);
+
+    template.hasResourceProperties('AWS::ECR::PublicRepository', {
+      RepositoryName: 'ai-social-media-lambda-light',
+    });
+
+    template.hasResourceProperties('AWS::ECR::PublicRepository', {
+      RepositoryName: 'ai-social-media-lambda-heavy',
+    });
+
+    template.resourceCountIs('AWS::ECR::PublicRepository', 2);
+  });
+
+  test('RegistryStack creates no Lambda functions (DDR-046)', () => {
+    const template = Template.fromStack(registry);
+    template.resourceCountIs('AWS::Lambda::Function', 0);
+  });
+
+  // =========================================================================
   // FrontendStack (DDR-045: stateless — no S3 bucket creation)
   // =========================================================================
 
@@ -152,34 +203,6 @@ describe('AiSocialMedia Infrastructure', () => {
 
     // Total: 5 Lambda functions
     template.resourceCountIs('AWS::Lambda::Function', 5);
-  });
-
-  test('BackendStack creates 2 ECR Private repositories (DDR-041)', () => {
-    const template = Template.fromStack(backend);
-
-    template.hasResourceProperties('AWS::ECR::Repository', {
-      RepositoryName: 'ai-social-media-lambda-light',
-    });
-
-    template.hasResourceProperties('AWS::ECR::Repository', {
-      RepositoryName: 'ai-social-media-lambda-heavy',
-    });
-
-    template.resourceCountIs('AWS::ECR::Repository', 2);
-  });
-
-  test('BackendStack creates 2 ECR Public repositories (DDR-041)', () => {
-    const template = Template.fromStack(backend);
-
-    template.hasResourceProperties('AWS::ECR::PublicRepository', {
-      RepositoryName: 'ai-social-media-lambda-light',
-    });
-
-    template.hasResourceProperties('AWS::ECR::PublicRepository', {
-      RepositoryName: 'ai-social-media-lambda-heavy',
-    });
-
-    template.resourceCountIs('AWS::ECR::PublicRepository', 2);
   });
 
   test('BackendStack creates 2 Step Functions state machines', () => {
