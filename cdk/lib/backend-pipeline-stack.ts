@@ -143,23 +143,24 @@ export class BackendPipelineStack extends cdk.Stack {
 
               // --- ECR Public: Light images (generic, no ffmpeg) ---
               // Build 2: Enhancement Lambda (generic Gemini passthrough)
+              // NOTE: All Lambdas use CMD_TARGET=media-lambda until multi-Lambda split (DDR-035) is implemented
               'echo "Building Enhancement Lambda (public light)..."',
-              'docker build --build-arg CMD_TARGET=enhance-lambda -t $PUBLIC_LIGHT_URI:enhance-$COMMIT -t $PUBLIC_LIGHT_URI:enhance-latest -f cmd/media-lambda/Dockerfile.light .',
+              'docker build --build-arg CMD_TARGET=media-lambda -t $PUBLIC_LIGHT_URI:enhance-$COMMIT -t $PUBLIC_LIGHT_URI:enhance-latest -f cmd/media-lambda/Dockerfile.light .',
 
               // --- ECR Public: Heavy images (generic, with ffmpeg) ---
               // Build 3: Thumbnail Lambda (generic ffmpeg thumbnail extraction)
               'echo "Building Thumbnail Lambda (public heavy)..."',
-              'docker build --build-arg CMD_TARGET=thumbnail-lambda -t $PUBLIC_HEAVY_URI:thumb-$COMMIT -t $PUBLIC_HEAVY_URI:thumb-latest -f cmd/media-lambda/Dockerfile.heavy .',
+              'docker build --build-arg CMD_TARGET=media-lambda -t $PUBLIC_HEAVY_URI:thumb-$COMMIT -t $PUBLIC_HEAVY_URI:thumb-latest -f cmd/media-lambda/Dockerfile.heavy .',
 
               // --- ECR Private: Heavy images (proprietary, with ffmpeg) ---
               // Build 4: Selection Lambda (proprietary AI selection algorithms)
               'echo "Building Selection Lambda (private heavy)..."',
-              'docker build --build-arg CMD_TARGET=selection-lambda -t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest -f cmd/media-lambda/Dockerfile.heavy .',
+              'docker build --build-arg CMD_TARGET=media-lambda -t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest -f cmd/media-lambda/Dockerfile.heavy .',
 
               // --- ECR Public: Heavy images (generic, with ffmpeg) ---
               // Build 5: Video Lambda (generic ffmpeg video processing)
               'echo "Building Video Lambda (public heavy)..."',
-              'docker build --build-arg CMD_TARGET=video-lambda -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest -f cmd/media-lambda/Dockerfile.heavy .',
+              'docker build --build-arg CMD_TARGET=media-lambda -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest -f cmd/media-lambda/Dockerfile.heavy .',
             ],
           },
           post_build: {
