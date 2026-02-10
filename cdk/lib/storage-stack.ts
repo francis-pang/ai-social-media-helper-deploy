@@ -67,6 +67,9 @@ export class StorageStack extends cdk.Stack {
           allowedHeaders: ['*'],
           allowedMethods: [s3.HttpMethods.PUT],
           allowedOrigins,
+          // Expose ETag so the browser can read it from chunk upload responses
+          // (required for S3 CompleteMultipartUpload — DDR-054).
+          exposedHeaders: ['ETag'],
           maxAge: 3600,
         },
       ],
