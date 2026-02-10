@@ -1,5 +1,4 @@
 import * as cdk from 'aws-cdk-lib/core';
-import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
