@@ -189,27 +189,40 @@ export class BackendPipelineStack extends cdk.Stack {
               // --- Parallel Docker builds in 3 waves (DDR-047) ---
               // Helper function for building images with --cache-from
               // --provenance=false: required for Lambda-compatible Docker image manifest (avoids OCI index)
-              'build_image() { local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"; echo "Building $cmd..."; docker build --provenance=false --cache-from "$cache" --build-arg CMD_TARGET="$cmd" $extra_args -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"; }',
+              // set -o pipefail ensures docker build failures propagate through tee
+              'build_image() { set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"; echo "Building $cmd..."; docker build --provenance=false --cache-from "$cache" --build-arg CMD_TARGET="$cmd" $extra_args -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"; }',
+
+              // IMPORTANT: Each wave combines all builds + wait into a SINGLE command.
+              // CodeBuild runs each command array entry in its own shell process, so
+              // a standalone `wait` cannot see background processes from previous commands.
+              // The /tmp/built-* flag is created AFTER build success (&&) to avoid
+              // false positives when the build fails.
 
               // Wave 1: Light images (fast, ~30s each, no ffmpeg, DDR-053)
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_API" = "true" ]) && touch /tmp/built-api && build_image media-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:api-$COMMIT -t $PRIVATE_LIGHT_URI:api-latest" "$PRIVATE_LIGHT_URI:api-latest" &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_TRIAGE" = "true" ]) && touch /tmp/built-triage && build_image triage-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:triage-$COMMIT -t $PRIVATE_LIGHT_URI:triage-latest" "$PRIVATE_LIGHT_URI:api-latest" &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DESC" = "true" ]) && touch /tmp/built-desc && build_image description-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:desc-$COMMIT -t $PRIVATE_LIGHT_URI:desc-latest" "$PRIVATE_LIGHT_URI:api-latest" &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DOWNLOAD" = "true" ]) && touch /tmp/built-download && build_image download-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:download-$COMMIT -t $PRIVATE_LIGHT_URI:download-latest" "$PRIVATE_LIGHT_URI:api-latest" &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_PUBLISH" = "true" ]) && touch /tmp/built-publish && build_image publish-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:publish-$COMMIT -t $PRIVATE_LIGHT_URI:publish-latest" "$PRIVATE_LIGHT_URI:api-latest" &',
-              'wait',
+              [
+                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_API" = "true" ]) && (build_image media-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:api-$COMMIT -t $PRIVATE_LIGHT_URI:api-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-api) &',
+                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_TRIAGE" = "true" ]) && (build_image triage-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:triage-$COMMIT -t $PRIVATE_LIGHT_URI:triage-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-triage) &',
+                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DESC" = "true" ]) && (build_image description-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:desc-$COMMIT -t $PRIVATE_LIGHT_URI:desc-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-desc) &',
+                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DOWNLOAD" = "true" ]) && (build_image download-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:download-$COMMIT -t $PRIVATE_LIGHT_URI:download-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-download) &',
+                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_PUBLISH" = "true" ]) && (build_image publish-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:publish-$COMMIT -t $PRIVATE_LIGHT_URI:publish-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-publish) &',
+                'wait',
+              ].join('\n'),
 
               // Wave 2: More light images (DDR-053: split wave to avoid too many concurrent builds)
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_ENHANCE" = "true" ]) && touch /tmp/built-enhance && build_image enhance-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest -t $PUBLIC_LIGHT_URI:enhance-$COMMIT -t $PUBLIC_LIGHT_URI:enhance-latest" "$PRIVATE_LIGHT_URI:api-latest" &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_WEBHOOK" = "true" ]) && touch /tmp/built-webhook && build_image webhook-lambda Dockerfile.light "-t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest" "$PRIVATE_WEBHOOK_URI:webhook-latest" &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_OAUTH" = "true" ]) && touch /tmp/built-oauth && build_image oauth-lambda Dockerfile.light "-t $PRIVATE_OAUTH_URI:oauth-$COMMIT -t $PRIVATE_OAUTH_URI:oauth-latest" "$PRIVATE_OAUTH_URI:oauth-latest" &',
-              'wait',
+              [
+                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_ENHANCE" = "true" ]) && (build_image enhance-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest -t $PUBLIC_LIGHT_URI:enhance-$COMMIT -t $PUBLIC_LIGHT_URI:enhance-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-enhance) &',
+                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_WEBHOOK" = "true" ]) && (build_image webhook-lambda Dockerfile.light "-t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest" "$PRIVATE_WEBHOOK_URI:webhook-latest" && touch /tmp/built-webhook) &',
+                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_OAUTH" = "true" ]) && (build_image oauth-lambda Dockerfile.light "-t $PRIVATE_OAUTH_URI:oauth-$COMMIT -t $PRIVATE_OAUTH_URI:oauth-latest" "$PRIVATE_OAUTH_URI:oauth-latest" && touch /tmp/built-oauth) &',
+                'wait',
+              ].join('\n'),
 
               // Wave 3: Heavy images (slower, ~60-90s each, includes ffmpeg)
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_THUMB" = "true" ]) && touch /tmp/built-thumb && build_image thumbnail-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest -t $PUBLIC_HEAVY_URI:thumb-$COMMIT -t $PUBLIC_HEAVY_URI:thumb-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_SELECT" = "true" ]) && touch /tmp/built-select && build_image selection-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_VIDEO" = "true" ]) && touch /tmp/built-video && build_image video-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" &',
-              'wait',
+              [
+                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_THUMB" = "true" ]) && (build_image thumbnail-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest -t $PUBLIC_HEAVY_URI:thumb-$COMMIT -t $PUBLIC_HEAVY_URI:thumb-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-thumb) &',
+                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_SELECT" = "true" ]) && (build_image selection-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-select) &',
+                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_VIDEO" = "true" ]) && (build_image video-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-video) &',
+                'wait',
+              ].join('\n'),
 
               // Log build summary
               'echo "=== Build summary ==="; for img in api triage desc download publish enhance webhook oauth thumb select video; do [ -f /tmp/built-$img ] && echo "  $img: BUILT" || echo "  $img: SKIPPED (unchanged)"; done',
@@ -218,41 +231,45 @@ export class BackendPipelineStack extends cdk.Stack {
           post_build: {
             commands: [
               // Push only images that were built (DDR-047: conditional builds)
-              'echo "Pushing built images in parallel..."',
-              // ECR Private: light images (only if built, DDR-053)
-              '[ -f /tmp/built-api ] && docker push $PRIVATE_LIGHT_URI:api-$COMMIT &',
-              '[ -f /tmp/built-api ] && docker push $PRIVATE_LIGHT_URI:api-latest &',
-              '[ -f /tmp/built-triage ] && docker push $PRIVATE_LIGHT_URI:triage-$COMMIT &',
-              '[ -f /tmp/built-triage ] && docker push $PRIVATE_LIGHT_URI:triage-latest &',
-              '[ -f /tmp/built-desc ] && docker push $PRIVATE_LIGHT_URI:desc-$COMMIT &',
-              '[ -f /tmp/built-desc ] && docker push $PRIVATE_LIGHT_URI:desc-latest &',
-              '[ -f /tmp/built-download ] && docker push $PRIVATE_LIGHT_URI:download-$COMMIT &',
-              '[ -f /tmp/built-download ] && docker push $PRIVATE_LIGHT_URI:download-latest &',
-              '[ -f /tmp/built-publish ] && docker push $PRIVATE_LIGHT_URI:publish-$COMMIT &',
-              '[ -f /tmp/built-publish ] && docker push $PRIVATE_LIGHT_URI:publish-latest &',
-              '[ -f /tmp/built-enhance ] && docker push $PRIVATE_LIGHT_URI:enhance-$COMMIT &',
-              '[ -f /tmp/built-enhance ] && docker push $PRIVATE_LIGHT_URI:enhance-latest &',
-              // ECR Private: heavy images (only if built)
-              '[ -f /tmp/built-select ] && docker push $PRIVATE_HEAVY_URI:select-$COMMIT &',
-              '[ -f /tmp/built-select ] && docker push $PRIVATE_HEAVY_URI:select-latest &',
-              '[ -f /tmp/built-thumb ] && docker push $PRIVATE_HEAVY_URI:thumb-$COMMIT &',
-              '[ -f /tmp/built-thumb ] && docker push $PRIVATE_HEAVY_URI:thumb-latest &',
-              '[ -f /tmp/built-video ] && docker push $PRIVATE_HEAVY_URI:video-$COMMIT &',
-              '[ -f /tmp/built-video ] && docker push $PRIVATE_HEAVY_URI:video-latest &',
-              // ECR Private: webhook (only if built, DDR-044)
-              '[ -f /tmp/built-webhook ] && docker push $PRIVATE_WEBHOOK_URI:webhook-$COMMIT &',
-              '[ -f /tmp/built-webhook ] && docker push $PRIVATE_WEBHOOK_URI:webhook-latest &',
-              // ECR Private: oauth (only if built, DDR-048)
-              '[ -f /tmp/built-oauth ] && docker push $PRIVATE_OAUTH_URI:oauth-$COMMIT &',
-              '[ -f /tmp/built-oauth ] && docker push $PRIVATE_OAUTH_URI:oauth-latest &',
-              // ECR Public images (only if built, DDR-041)
-              '[ -f /tmp/built-enhance ] && docker push $PUBLIC_LIGHT_URI:enhance-$COMMIT &',
-              '[ -f /tmp/built-enhance ] && docker push $PUBLIC_LIGHT_URI:enhance-latest &',
-              '[ -f /tmp/built-thumb ] && docker push $PUBLIC_HEAVY_URI:thumb-$COMMIT &',
-              '[ -f /tmp/built-thumb ] && docker push $PUBLIC_HEAVY_URI:thumb-latest &',
-              '[ -f /tmp/built-video ] && docker push $PUBLIC_HEAVY_URI:video-$COMMIT &',
-              '[ -f /tmp/built-video ] && docker push $PUBLIC_HEAVY_URI:video-latest &',
-              'wait',
+              // All pushes + wait combined into a single command so wait can
+              // see all background push processes (same fix as build waves).
+              [
+                'echo "Pushing built images in parallel..."',
+                // ECR Private: light images (only if built, DDR-053)
+                '[ -f /tmp/built-api ] && docker push $PRIVATE_LIGHT_URI:api-$COMMIT &',
+                '[ -f /tmp/built-api ] && docker push $PRIVATE_LIGHT_URI:api-latest &',
+                '[ -f /tmp/built-triage ] && docker push $PRIVATE_LIGHT_URI:triage-$COMMIT &',
+                '[ -f /tmp/built-triage ] && docker push $PRIVATE_LIGHT_URI:triage-latest &',
+                '[ -f /tmp/built-desc ] && docker push $PRIVATE_LIGHT_URI:desc-$COMMIT &',
+                '[ -f /tmp/built-desc ] && docker push $PRIVATE_LIGHT_URI:desc-latest &',
+                '[ -f /tmp/built-download ] && docker push $PRIVATE_LIGHT_URI:download-$COMMIT &',
+                '[ -f /tmp/built-download ] && docker push $PRIVATE_LIGHT_URI:download-latest &',
+                '[ -f /tmp/built-publish ] && docker push $PRIVATE_LIGHT_URI:publish-$COMMIT &',
+                '[ -f /tmp/built-publish ] && docker push $PRIVATE_LIGHT_URI:publish-latest &',
+                '[ -f /tmp/built-enhance ] && docker push $PRIVATE_LIGHT_URI:enhance-$COMMIT &',
+                '[ -f /tmp/built-enhance ] && docker push $PRIVATE_LIGHT_URI:enhance-latest &',
+                // ECR Private: heavy images (only if built)
+                '[ -f /tmp/built-select ] && docker push $PRIVATE_HEAVY_URI:select-$COMMIT &',
+                '[ -f /tmp/built-select ] && docker push $PRIVATE_HEAVY_URI:select-latest &',
+                '[ -f /tmp/built-thumb ] && docker push $PRIVATE_HEAVY_URI:thumb-$COMMIT &',
+                '[ -f /tmp/built-thumb ] && docker push $PRIVATE_HEAVY_URI:thumb-latest &',
+                '[ -f /tmp/built-video ] && docker push $PRIVATE_HEAVY_URI:video-$COMMIT &',
+                '[ -f /tmp/built-video ] && docker push $PRIVATE_HEAVY_URI:video-latest &',
+                // ECR Private: webhook (only if built, DDR-044)
+                '[ -f /tmp/built-webhook ] && docker push $PRIVATE_WEBHOOK_URI:webhook-$COMMIT &',
+                '[ -f /tmp/built-webhook ] && docker push $PRIVATE_WEBHOOK_URI:webhook-latest &',
+                // ECR Private: oauth (only if built, DDR-048)
+                '[ -f /tmp/built-oauth ] && docker push $PRIVATE_OAUTH_URI:oauth-$COMMIT &',
+                '[ -f /tmp/built-oauth ] && docker push $PRIVATE_OAUTH_URI:oauth-latest &',
+                // ECR Public images (only if built, DDR-041)
+                '[ -f /tmp/built-enhance ] && docker push $PUBLIC_LIGHT_URI:enhance-$COMMIT &',
+                '[ -f /tmp/built-enhance ] && docker push $PUBLIC_LIGHT_URI:enhance-latest &',
+                '[ -f /tmp/built-thumb ] && docker push $PUBLIC_HEAVY_URI:thumb-$COMMIT &',
+                '[ -f /tmp/built-thumb ] && docker push $PUBLIC_HEAVY_URI:thumb-latest &',
+                '[ -f /tmp/built-video ] && docker push $PUBLIC_HEAVY_URI:video-$COMMIT &',
+                '[ -f /tmp/built-video ] && docker push $PUBLIC_HEAVY_URI:video-latest &',
+                'wait',
+              ].join('\n'),
 
               // Write image URIs for deploy stage — use new tag if built, :latest if skipped (DDR-053)
               'API_TAG=$([ -f /tmp/built-api ] && echo "api-$COMMIT" || echo "api-latest")',
