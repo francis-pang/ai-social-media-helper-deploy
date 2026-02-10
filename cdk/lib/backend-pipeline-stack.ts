@@ -79,7 +79,7 @@ export class BackendPipelineStack extends cdk.Stack {
       branch: 'main',
       connectionArn: props.codeStarConnectionArn,
       output: sourceOutput,
-      triggerOnPush: false, // Enable once pipeline is tested
+      triggerOnPush: true, // A4: CodeStar native trigger — GitHub Actions handles selective stop
     });
 
     // --- Backend Build (11 Docker images: 8 private + 3 public, DDR-053) ---

@@ -53,7 +53,7 @@ export class FrontendPipelineStack extends cdk.Stack {
       branch: 'main',
       connectionArn: props.codeStarConnectionArn,
       output: sourceOutput,
-      triggerOnPush: false, // Enable once pipeline is tested
+      triggerOnPush: true, // A4: CodeStar native trigger — GitHub Actions handles selective stop
     });
 
     // --- Frontend Build ---

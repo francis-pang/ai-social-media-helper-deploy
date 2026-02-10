@@ -1,0 +1,154 @@
+# B1: GitHub Actions Only — CDK Deploy
+# Runs cdk synth, cdk diff, and cdk deploy on push to main.
+# Path-filtered to only run when CDK files change.
+#
+# See: DDR-055-deployment-automation.md (in app repo docs/design-decisions/)
+
+name: CDK Deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'cdk/**'
+      - '!cdk/README.md'
+  workflow_dispatch:
+    inputs:
+      deploy_target:
+        description: "Which stacks to deploy"
+        required: true
+        type: choice
+        options:
+          - core       # Storage + Registry + Backend + Webhook
+          - full       # All stacks
+          - pipelines  # BackendPipeline + FrontendPipeline only
+          - edge       # Frontend only
+          - observability  # Operations stacks
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  NODE_VERSION: '22'
+
+jobs:
+  preflight:
+    name: Preflight Checks
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cdk
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: cdk/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: TypeScript compile check
+        run: npx tsc --noEmit
+
+      - name: CDK Synth
+        run: npx cdk synth --all --quiet
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: ${{ env.AWS_REGION }}
+
+      - name: CDK Lint (validate-cdk.sh)
+        run: |
+          if [ -f scripts/validate-cdk.sh ]; then
+            bash scripts/validate-cdk.sh
+          fi
+
+  deploy:
+    name: CDK Deploy
+    runs-on: ubuntu-latest
+    needs: preflight
+    defaults:
+      run:
+        working-directory: cdk
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'
+          cache-dependency-path: cdk/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: CDK Diff
+        run: npx cdk diff --all 2>&1 || true
+
+      - name: CDK Deploy
+        run: |
+          # Determine deploy target
+          TARGET="${{ github.event.inputs.deploy_target || 'core' }}"
+
+          echo "Deploy target: $TARGET"
+
+          case "$TARGET" in
+            core)
+              # DDR-047: Deploy order — Storage → Registry → Backend → Webhook
+              npx cdk deploy \
+                AiSocialMediaStorage \
+                AiSocialMediaRegistry \
+                AiSocialMediaBackend \
+                AiSocialMediaWebhook \
+                --method=direct --require-approval=never --concurrency 2
+              ;;
+            full)
+              # DDR-045/047: Full ordered deploy
+              npx cdk deploy --all --method=direct --require-approval=never --concurrency 5
+              ;;
+            pipelines)
+              npx cdk deploy \
+                AiSocialMediaBackendPipeline \
+                AiSocialMediaFrontendPipeline \
+                --method=direct --require-approval=never --concurrency 2
+              ;;
+            edge)
+              npx cdk deploy AiSocialMediaFrontend \
+                --method=direct --require-approval=never
+              ;;
+            observability)
+              npx cdk deploy \
+                AiSocialMediaOperationsAlert \
+                AiSocialMediaOperationsMonitoring \
+                AiSocialMediaOperationsDashboard \
+                --method=direct --require-approval=never --concurrency 3
+              ;;
+          esac
+
+      - name: Summary
+        if: always()
+        run: |
+          TARGET="${{ github.event.inputs.deploy_target || 'core' }}"
+          echo "## CDK Deploy Summary" >> "$GITHUB_STEP_SUMMARY"
+          echo "" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Property | Value |" >> "$GITHUB_STEP_SUMMARY"
+          echo "|----------|-------|" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Target** | $TARGET |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Commit** | ${{ github.sha }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Region** | ${{ env.AWS_REGION }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Status** | ${{ job.status }} |" >> "$GITHUB_STEP_SUMMARY"
