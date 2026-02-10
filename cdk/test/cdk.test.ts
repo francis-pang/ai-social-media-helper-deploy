@@ -52,7 +52,10 @@ describe('AiSocialMedia Infrastructure', () => {
     publicLightRepoName: 'ai-social-media-lambda-light',
     publicHeavyRepoName: 'ai-social-media-lambda-heavy',
     apiHandler: backend.apiHandler,
-    workerProcessor: backend.workerProcessor,
+    triageProcessor: backend.triageProcessor,
+    descriptionProcessor: backend.descriptionProcessor,
+    downloadProcessor: backend.downloadProcessor,
+    publishProcessor: backend.publishProcessor,
     thumbnailProcessor: backend.thumbnailProcessor,
     selectionProcessor: backend.selectionProcessor,
     enhancementProcessor: backend.enhancementProcessor,
@@ -186,40 +189,50 @@ describe('AiSocialMedia Infrastructure', () => {
   // BackendStack
   // =========================================================================
 
-  test('BackendStack creates 6 Lambda functions', () => {
+  test('BackendStack creates 9 Lambda functions (DDR-053)', () => {
     const template = Template.fromStack(backend);
 
+    // API Lambda (256 MB, 30s)
     template.hasResourceProperties('AWS::Lambda::Function', {
       MemorySize: 256,
       Timeout: 30,
     });
 
+    // Thumbnail Lambda (512 MB, 2 min)
     template.hasResourceProperties('AWS::Lambda::Function', {
       MemorySize: 512,
       Timeout: 120,
     });
 
+    // Selection + Video Lambdas (4 GB, 15 min)
     template.hasResourceProperties('AWS::Lambda::Function', {
       MemorySize: 4096,
       Timeout: 900,
     });
 
+    // Enhancement + Description Lambdas (2 GB, 5 min)
     template.hasResourceProperties('AWS::Lambda::Function', {
       MemorySize: 2048,
       Timeout: 300,
     });
 
-    // Worker Lambda (DDR-050: async job dispatch)
+    // Triage + Download Lambdas (2 GB, 10 min)
     template.hasResourceProperties('AWS::Lambda::Function', {
       MemorySize: 2048,
       Timeout: 600,
     });
 
-    // Total: 6 Lambda functions (api, worker, thumbnail, selection, enhancement, video)
-    template.resourceCountIs('AWS::Lambda::Function', 6);
+    // Publish Lambda (256 MB, 5 min)
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      MemorySize: 256,
+      Timeout: 300,
+    });
+
+    // Total: 9 Lambda functions (api, triage, description, download, publish, thumbnail, selection, enhancement, video)
+    template.resourceCountIs('AWS::Lambda::Function', 9);
   });
 
-  test('BackendStack creates 2 Step Functions state machines', () => {
+  test('BackendStack creates 4 Step Functions state machines (DDR-052, DDR-053)', () => {
     const template = Template.fromStack(backend);
 
     template.hasResourceProperties('AWS::StepFunctions::StateMachine', {
@@ -230,7 +243,15 @@ describe('AiSocialMedia Infrastructure', () => {
       StateMachineName: 'AiSocialMediaEnhancementPipeline',
     });
 
-    template.resourceCountIs('AWS::StepFunctions::StateMachine', 2);
+    template.hasResourceProperties('AWS::StepFunctions::StateMachine', {
+      StateMachineName: 'AiSocialMediaTriagePipeline',
+    });
+
+    template.hasResourceProperties('AWS::StepFunctions::StateMachine', {
+      StateMachineName: 'AiSocialMediaPublishPipeline',
+    });
+
+    template.resourceCountIs('AWS::StepFunctions::StateMachine', 4);
   });
 
   test('BackendStack creates API Gateway', () => {

@@ -49,7 +49,7 @@ const storage = new StorageStack(app, 'AiSocialMediaStorage', {
 const registry = new RegistryStack(app, 'AiSocialMediaRegistry', { env });
 
 // =========================================================================
-// 3. Backend (STATELESS): 5 Lambdas + API Gateway + Cognito + 2 Step Functions (DDR-035)
+// 3. Backend (STATELESS): 11 Lambdas + API Gateway + Cognito + 4 Step Functions (DDR-035, DDR-053)
 // =========================================================================
 // ECR repos come from RegistryStack (DDR-046)
 const backend = new BackendStack(app, 'AiSocialMediaBackend', {
@@ -105,7 +105,7 @@ const webhook = new WebhookStack(app, 'AiSocialMediaWebhook', {
 webhook.addDependency(registry);
 
 // =========================================================================
-// 7. Backend Pipeline (STATELESS): 7 Docker builds -> 7 Lambda updates (DDR-035, DDR-041, DDR-044, DDR-048)
+// 7. Backend Pipeline (STATELESS): 11 Docker builds -> 11 Lambda updates (DDR-035, DDR-041, DDR-044, DDR-048, DDR-053)
 // =========================================================================
 // ECR repos come from RegistryStack (DDR-046), artifact bucket from StorageStack (DDR-045)
 const backendPipeline = new BackendPipelineStack(app, 'AiSocialMediaBackendPipeline', {
@@ -115,7 +115,10 @@ const backendPipeline = new BackendPipelineStack(app, 'AiSocialMediaBackendPipel
   publicLightRepoName: registry.publicLightEcrRepo.repositoryName!,
   publicHeavyRepoName: registry.publicHeavyEcrRepo.repositoryName!,
   apiHandler: backend.apiHandler,
-  workerProcessor: backend.workerProcessor,
+  triageProcessor: backend.triageProcessor,
+  descriptionProcessor: backend.descriptionProcessor,
+  downloadProcessor: backend.downloadProcessor,
+  publishProcessor: backend.publishProcessor,
   thumbnailProcessor: backend.thumbnailProcessor,
   selectionProcessor: backend.selectionProcessor,
   enhancementProcessor: backend.enhancementProcessor,
@@ -135,6 +138,10 @@ backendPipeline.addDependency(webhook);
 // =========================================================================
 const lambdaEntries = [
   { id: 'ApiHandler', fn: backend.apiHandler },
+  { id: 'TriageProcessor', fn: backend.triageProcessor },
+  { id: 'DescriptionProcessor', fn: backend.descriptionProcessor },
+  { id: 'DownloadProcessor', fn: backend.downloadProcessor },
+  { id: 'PublishProcessor', fn: backend.publishProcessor },
   { id: 'ThumbnailProcessor', fn: backend.thumbnailProcessor },
   { id: 'SelectionProcessor', fn: backend.selectionProcessor },
   { id: 'EnhancementProcessor', fn: backend.enhancementProcessor },
