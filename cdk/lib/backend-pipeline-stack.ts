@@ -180,7 +180,8 @@ export class BackendPipelineStack extends cdk.Stack {
 
               // --- Parallel Docker builds in 3 waves (DDR-047) ---
               // Helper function for building images with --cache-from
-              'build_image() { local cmd=$1 df=$2 tags=$3 cache=$4; echo "Building $cmd..."; docker build --cache-from "$cache" --build-arg CMD_TARGET="$cmd" -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"; }',
+              // --provenance=false: required for Lambda-compatible Docker image manifest (avoids OCI index)
+              'build_image() { local cmd=$1 df=$2 tags=$3 cache=$4; echo "Building $cmd..."; docker build --provenance=false --cache-from "$cache" --build-arg CMD_TARGET="$cmd" -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"; }',
 
               // Wave 1: Light images (fast, ~30s each, no ffmpeg)
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_API" = "true" ]) && touch /tmp/built-api && build_image media-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:api-$COMMIT -t $PRIVATE_LIGHT_URI:api-latest" "$PRIVATE_LIGHT_URI:api-latest" &',

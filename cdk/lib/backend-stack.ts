@@ -159,7 +159,7 @@ export class BackendStack extends cdk.Stack {
     // Handles async job processing: triage, description, download, publish.
     // Invoked asynchronously by the API Lambda via lambda:Invoke (Event type).
     this.workerProcessor = new lambda.DockerImageFunction(this, 'WorkerProcessor', {
-      code: lambda.DockerImageCode.fromEcr(this.lightEcrRepo, { tagOrDigest: 'api-latest' }),
+      code: lambda.DockerImageCode.fromEcr(this.lightEcrRepo, { tagOrDigest: 'worker-latest' }),
       timeout: cdk.Duration.minutes(10),
       memorySize: 2048,
       ephemeralStorageSize: cdk.Size.mebibytes(2048),
@@ -172,8 +172,7 @@ export class BackendStack extends cdk.Stack {
 
     // --- 3. Thumbnail Lambda (DDR-035: 512 MB, 2 min, DDR-041: ECR Public heavy) ---
     this.thumbnailProcessor = new lambda.DockerImageFunction(this, 'ThumbnailProcessor', {
-      // Uses select-latest as initial placeholder; pipeline updates to correct image
-      code: lambda.DockerImageCode.fromEcr(this.heavyEcrRepo, { tagOrDigest: 'select-latest' }),
+      code: lambda.DockerImageCode.fromEcr(this.heavyEcrRepo, { tagOrDigest: 'thumb-latest' }),
       timeout: cdk.Duration.minutes(2),
       memorySize: 512,
       ephemeralStorageSize: cdk.Size.mebibytes(2048),
@@ -290,10 +289,10 @@ export class BackendStack extends cdk.Stack {
     const thumbnailMap = new sfn.Map(this, 'ThumbnailMap', {
       maxConcurrency: 20,
       itemsPath: '$.mediaKeys',
-      resultPath: '$.thumbnailResults',
+      resultPath: '$.thumbnailKeys',
       itemSelector: {
         'sessionId.$': '$.sessionId',
-        'mediaKey.$': '$$.Map.Item.Value',
+        'key.$': '$$.Map.Item.Value',
       },
     });
     thumbnailMap.itemProcessor(generateThumbnails);
@@ -335,7 +334,8 @@ export class BackendStack extends cdk.Stack {
       itemSelector: {
         'sessionId.$': '$.sessionId',
         'jobId.$': '$.jobId',
-        'mediaKey.$': '$$.Map.Item.Value',
+        'key.$': '$$.Map.Item.Value',
+        'itemIndex.$': '$$.Map.Item.Index',
       },
     });
     photoMap.itemProcessor(enhancePhoto);
@@ -356,7 +356,8 @@ export class BackendStack extends cdk.Stack {
       itemSelector: {
         'sessionId.$': '$.sessionId',
         'jobId.$': '$.jobId',
-        'mediaKey.$': '$$.Map.Item.Value',
+        'key.$': '$$.Map.Item.Value',
+        'itemIndex.$': '$$.Map.Item.Index',
       },
     });
     videoMap.itemProcessor(processVideo);
