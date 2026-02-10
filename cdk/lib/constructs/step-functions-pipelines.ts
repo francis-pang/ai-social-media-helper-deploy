@@ -75,6 +75,7 @@ export class StepFunctionsPipelines extends Construct {
 
     this.selectionPipeline = new sfn.StateMachine(this, 'SelectionPipeline', {
       stateMachineName: 'AiSocialMediaSelectionPipeline',
+      comment: 'Generate thumbnails in parallel, then run Gemini AI to rank and select the best media',
       definitionBody: sfn.DefinitionBody.fromChainable(thumbnailMap.next(runSelection)),
       timeout: cdk.Duration.minutes(30),
     });
@@ -136,6 +137,7 @@ export class StepFunctionsPipelines extends Construct {
 
     this.enhancementPipeline = new sfn.StateMachine(this, 'EnhancementPipeline', {
       stateMachineName: 'AiSocialMediaEnhancementPipeline',
+      comment: 'Parallel branches: AI photo editing (Gemini) + video ffmpeg processing per file',
       definitionBody: sfn.DefinitionBody.fromChainable(parallelEnhance),
       timeout: cdk.Duration.minutes(30),
     });
@@ -200,6 +202,7 @@ export class StepFunctionsPipelines extends Construct {
 
     this.triagePipeline = new sfn.StateMachine(this, 'TriagePipeline', {
       stateMachineName: 'AiSocialMediaTriagePipeline',
+      comment: 'Upload media to Gemini Files API, poll until active, then run AI content triage',
       definitionBody: sfn.DefinitionBody.fromChainable(triagePrepare.next(triageHasVideos)),
       timeout: cdk.Duration.minutes(30),
     });
@@ -270,6 +273,7 @@ export class StepFunctionsPipelines extends Construct {
 
     this.publishPipeline = new sfn.StateMachine(this, 'PublishPipeline', {
       stateMachineName: 'AiSocialMediaPublishPipeline',
+      comment: 'Create Instagram media containers, poll video processing status, then publish the post',
       definitionBody: sfn.DefinitionBody.fromChainable(publishCreateContainers.next(publishHasVideos)),
       timeout: cdk.Duration.minutes(30),
     });

@@ -59,6 +59,7 @@ export class FrontendPipelineStack extends cdk.Stack {
     // --- Frontend Build ---
     const frontendBuild = new codebuild.PipelineProject(this, 'FrontendBuild', {
       projectName: 'AiSocialMediaFrontendBuild',
+      description: 'Build Preact SPA with Vite (Node 22, npm ci, npm run build) and inject Cognito config',
       environment: {
         buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
         computeType: codebuild.ComputeType.SMALL,
@@ -73,12 +74,12 @@ export class FrontendPipelineStack extends cdk.Stack {
         phases: {
           install: {
             'runtime-versions': { nodejs: '22' },
-            commands: ['cd web/frontend && npm ci'],
+            commands: ['cd $CODEBUILD_SRC_DIR/web/frontend && npm ci'],
           },
           build: {
             commands: [
-              'cd web/frontend && npm audit --audit-level=high || echo "WARN: npm audit found vulnerabilities (non-blocking)"',
-              'cd web/frontend && npm run build',
+              'cd $CODEBUILD_SRC_DIR/web/frontend && npm audit --audit-level=high || echo "WARN: npm audit found vulnerabilities (non-blocking)"',
+              'cd $CODEBUILD_SRC_DIR/web/frontend && npm run build',
             ],
           },
         },
@@ -92,6 +93,7 @@ export class FrontendPipelineStack extends cdk.Stack {
     // --- Deploy (S3 sync + CloudFront invalidation) ---
     const deployProject = new codebuild.PipelineProject(this, 'DeployProject', {
       projectName: 'AiSocialMediaFrontendDeploy',
+      description: 'Invalidate CloudFront cache after S3 deployment to serve latest SPA build',
       environment: {
         buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
         computeType: codebuild.ComputeType.SMALL,

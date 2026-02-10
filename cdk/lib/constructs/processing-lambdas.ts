@@ -1,3 +1,4 @@
+import * as path from 'path';
 import * as cdk from 'aws-cdk-lib/core';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
@@ -57,6 +58,25 @@ export class ProcessingLambdas extends Construct {
 
   constructor(scope: Construct, id: string, props: ProcessingLambdasProps) {
     super(scope, id);
+    // Local image assets mode (DDR-054: deploy speed Phase 4).
+    // Use `-c localImages=true` to build Docker images locally instead of
+    // pulling from ECR. This enables `cdk deploy --hotswap` for Lambda code
+    // changes and eliminates the separate ECR push step during local dev.
+    const useLocalImages = cdk.Stack.of(scope).node.tryGetContext('localImages') === 'true';
+
+    // Helper: pick ECR-based or local Docker image code based on context flag.
+    // Local paths are relative to the CDK project root, pointing at the
+    // monorepo's Lambda source directories.
+    const lambdaCodeRoot = path.resolve(__dirname, '..', '..', '..', '..', 'ai-social-media-helper');
+    const imageCode = (
+      repo: ecr.IRepository,
+      tag: string,
+      localDir: string,
+    ): lambda.DockerImageCode =>
+      useLocalImages
+        ? lambda.DockerImageCode.fromImageAsset(path.join(lambdaCodeRoot, localDir))
+        : lambda.DockerImageCode.fromEcr(repo, { tagOrDigest: tag });
+
     // Shared environment variables for Lambdas that need Gemini
     const sharedEnv = {
       MEDIA_BUCKET_NAME: props.mediaBucket.bucketName,
@@ -70,7 +90,8 @@ export class ProcessingLambdas extends Construct {
 
     // --- 1. API Lambda (256 MB, 30s, ECR Private light) ---
     this.apiHandler = new lambda.DockerImageFunction(scope, 'ApiHandler', {
-      code: lambda.DockerImageCode.fromEcr(props.lightEcrRepo, { tagOrDigest: 'api-latest' }),
+      description: 'HTTP API handler — routes requests, dispatches async tasks, reads Instagram credentials',
+      code: imageCode(props.lightEcrRepo, 'api-latest', 'api-lambda'),
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
       ephemeralStorageSize: cdk.Size.mebibytes(512),
@@ -84,7 +105,8 @@ export class ProcessingLambdas extends Construct {
 
     // --- 2. Triage Lambda (DDR-053: 2 GB, 10 min, ECR Private light) ---
     this.triageProcessor = new lambda.DockerImageFunction(scope, 'TriageProcessor', {
-      code: lambda.DockerImageCode.fromEcr(props.lightEcrRepo, { tagOrDigest: 'triage-latest' }),
+      description: 'Triage pipeline — uploads media to Gemini, polls file status, runs AI content triage',
+      code: imageCode(props.lightEcrRepo, 'triage-latest', 'triage-lambda'),
       timeout: cdk.Duration.minutes(10),
       memorySize: 2048,
       ephemeralStorageSize: cdk.Size.mebibytes(2048),
@@ -93,7 +115,8 @@ export class ProcessingLambdas extends Construct {
 
     // --- 3. Description Lambda (DDR-053: 2 GB, 5 min, ECR Private light) ---
     this.descriptionProcessor = new lambda.DockerImageFunction(scope, 'DescriptionProcessor', {
-      code: lambda.DockerImageCode.fromEcr(props.lightEcrRepo, { tagOrDigest: 'desc-latest' }),
+      description: 'Caption generation — uses Gemini AI to generate Instagram captions and hashtags',
+      code: imageCode(props.lightEcrRepo, 'desc-latest', 'description-lambda'),
       timeout: cdk.Duration.minutes(5),
       memorySize: 2048,
       ephemeralStorageSize: cdk.Size.mebibytes(512),
@@ -102,7 +125,8 @@ export class ProcessingLambdas extends Construct {
 
     // --- 4. Download Lambda (DDR-053: 2 GB, 10 min, ECR Private light) ---
     this.downloadProcessor = new lambda.DockerImageFunction(scope, 'DownloadProcessor', {
-      code: lambda.DockerImageCode.fromEcr(props.lightEcrRepo, { tagOrDigest: 'download-latest' }),
+      description: 'Download bundle — packages selected media into a ZIP archive for user download',
+      code: imageCode(props.lightEcrRepo, 'download-latest', 'download-lambda'),
       timeout: cdk.Duration.minutes(10),
       memorySize: 2048,
       ephemeralStorageSize: cdk.Size.mebibytes(2048),
@@ -115,7 +139,8 @@ export class ProcessingLambdas extends Construct {
 
     // --- 5. Publish Lambda (DDR-053: 256 MB, 5 min, ECR Private light) ---
     this.publishProcessor = new lambda.DockerImageFunction(scope, 'PublishProcessor', {
-      code: lambda.DockerImageCode.fromEcr(props.lightEcrRepo, { tagOrDigest: 'publish-latest' }),
+      description: 'Publish pipeline — creates Instagram containers, polls video status, publishes posts',
+      code: imageCode(props.lightEcrRepo, 'publish-latest', 'publish-lambda'),
       timeout: cdk.Duration.minutes(5),
       memorySize: 256,
       ephemeralStorageSize: cdk.Size.mebibytes(512),
@@ -130,7 +155,8 @@ export class ProcessingLambdas extends Construct {
 
     // --- 6. Thumbnail Lambda (512 MB, 2 min, ECR Private heavy) ---
     this.thumbnailProcessor = new lambda.DockerImageFunction(scope, 'ThumbnailProcessor', {
-      code: lambda.DockerImageCode.fromEcr(props.heavyEcrRepo, { tagOrDigest: 'thumb-latest' }),
+      description: 'Thumbnail generation — creates preview thumbnails from photos and video frames via ffmpeg',
+      code: imageCode(props.heavyEcrRepo, 'thumb-latest', 'thumbnail-lambda'),
       timeout: cdk.Duration.minutes(2),
       memorySize: 512,
       ephemeralStorageSize: cdk.Size.mebibytes(2048),
@@ -139,7 +165,8 @@ export class ProcessingLambdas extends Construct {
 
     // --- 7. Selection Lambda (4 GB, 15 min, ECR Private heavy) ---
     this.selectionProcessor = new lambda.DockerImageFunction(scope, 'SelectionProcessor', {
-      code: lambda.DockerImageCode.fromEcr(props.heavyEcrRepo, { tagOrDigest: 'select-latest' }),
+      description: 'AI media selection — uses Gemini to rank and select the best photos/videos from uploads',
+      code: imageCode(props.heavyEcrRepo, 'select-latest', 'selection-lambda'),
       timeout: cdk.Duration.minutes(15),
       memorySize: 4096,
       ephemeralStorageSize: cdk.Size.mebibytes(4096),
@@ -148,7 +175,8 @@ export class ProcessingLambdas extends Construct {
 
     // --- 8. Enhancement Lambda (DDR-053: 2 GB, 5 min, ECR Private light) ---
     this.enhancementProcessor = new lambda.DockerImageFunction(scope, 'EnhancementProcessor', {
-      code: lambda.DockerImageCode.fromEcr(props.lightEcrRepo, { tagOrDigest: 'api-latest' }),
+      description: 'Photo enhancement — applies AI-driven edits per photo with user feedback loop via Gemini',
+      code: imageCode(props.lightEcrRepo, 'api-latest', 'enhancement-lambda'),
       timeout: cdk.Duration.minutes(5),
       memorySize: 2048,
       ephemeralStorageSize: cdk.Size.mebibytes(2048),
@@ -157,7 +185,8 @@ export class ProcessingLambdas extends Construct {
 
     // --- 9. Video Lambda (4 GB, 15 min, ECR Private heavy) ---
     this.videoProcessor = new lambda.DockerImageFunction(scope, 'VideoProcessor', {
-      code: lambda.DockerImageCode.fromEcr(props.heavyEcrRepo, { tagOrDigest: 'select-latest' }),
+      description: 'Video processing — applies ffmpeg transformations (trim, resize, filters) per video file',
+      code: imageCode(props.heavyEcrRepo, 'select-latest', 'video-lambda'),
       timeout: cdk.Duration.minutes(15),
       memorySize: 4096,
       ephemeralStorageSize: cdk.Size.mebibytes(10240),

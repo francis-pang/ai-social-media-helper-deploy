@@ -78,6 +78,7 @@ export class ApiGateway extends Construct {
 
     this.httpApi = new apigwv2.HttpApi(this, 'HttpApi', {
       apiName: 'AiSocialMediaApi',
+      description: 'Main API — JWT-authenticated routes for media sessions, AI pipelines, and Instagram publishing',
       corsPreflight: {
         allowHeaders: ['Content-Type', 'Authorization'],
         allowMethods: [

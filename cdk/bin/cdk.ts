@@ -7,6 +7,7 @@ import { BackendStack } from '../lib/backend-stack';
 import { FrontendPipelineStack } from '../lib/frontend-pipeline-stack';
 import { BackendPipelineStack } from '../lib/backend-pipeline-stack';
 import { OperationsAlertStack } from '../lib/operations-alert-stack';
+import { OperationsDashboardStack } from '../lib/operations-dashboard-stack';
 import { OperationsMonitoringStack } from '../lib/operations-monitoring-stack';
 import { WebhookStack } from '../lib/webhook-stack';
 
@@ -65,17 +66,14 @@ backend.addDependency(storage);
 backend.addDependency(registry);
 
 // =========================================================================
-// 4. Frontend (STATELESS): CloudFront with OAC, security headers, origin-verify, /api/* proxy
+// 4. Frontend (STATELESS): CloudFront with OAC, security headers, origin-verify via SSM, /api/* proxy (DDR-054)
 // =========================================================================
 // S3 bucket name passed as string to avoid cross-stack OAC cycle (DDR-045).
 // FrontendStack imports the bucket by name and manages the OAC bucket policy locally.
 const frontend = new FrontendStack(app, 'AiSocialMediaFrontend', {
   env,
-  apiEndpoint: backend.httpApi.apiEndpoint,
-  originVerifySecret: cdk.Fn.select(2, cdk.Fn.split('/', backend.stackId)),
   frontendBucketName: storage.frontendBucket.bucketName,
 });
-frontend.addDependency(backend);
 frontend.addDependency(storage); // Bucket must exist before CloudFront OAC (DDR-045)
 
 // =========================================================================
@@ -159,10 +157,21 @@ const opsAlert = new OperationsAlertStack(app, 'AiSocialMediaOperationsAlert', {
 opsAlert.addDependency(backend);
 
 // =========================================================================
-// 9. Operations — Monitoring (STATELESS): Dashboard, metric filters, Firehose, Glue (DDR-047)
+// 9. Operations — Log Ingestion (STATELESS): Metric filters, Firehose, Glue (DDR-047, DDR-054)
 // =========================================================================
 // Log/metrics archive buckets come from StorageStack (DDR-045)
 const opsMonitoring = new OperationsMonitoringStack(app, 'AiSocialMediaOperationsMonitoring', {
+  env,
+  lambdas: lambdaEntries,
+  logArchiveBucket: storage.logArchiveBucket,
+  metricsArchiveBucket: storage.metricsArchiveBucket,
+});
+opsMonitoring.addDependency(storage);
+
+// =========================================================================
+// 10. Operations — Dashboard (STATELESS): ~45-widget CloudWatch dashboard (DDR-054: split for fast deploys)
+// =========================================================================
+const opsDashboard = new OperationsDashboardStack(app, 'AiSocialMediaOperationsDashboard', {
   env,
   lambdas: lambdaEntries,
   httpApi: backend.httpApi,
@@ -170,12 +179,10 @@ const opsMonitoring = new OperationsMonitoringStack(app, 'AiSocialMediaOperation
   enhancementPipeline: backend.enhancementPipeline,
   sessionsTable: storage.sessionsTable,
   mediaBucket: storage.mediaBucket,
-  logArchiveBucket: storage.logArchiveBucket,
-  metricsArchiveBucket: storage.metricsArchiveBucket,
   alarms: opsAlert.alarms,
 });
-opsMonitoring.addDependency(backend);
-opsMonitoring.addDependency(storage);
-opsMonitoring.addDependency(opsAlert);
+opsDashboard.addDependency(backend);
+opsDashboard.addDependency(storage);
+opsDashboard.addDependency(opsAlert);
 
 app.synth();

@@ -2,13 +2,10 @@ import * as cdk from 'aws-cdk-lib/core';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { Construct } from 'constructs';
 
 export interface FrontendStackProps extends cdk.StackProps {
-  /** API Gateway endpoint URL (e.g. https://xxx.execute-api.us-east-1.amazonaws.com) */
-  apiEndpoint: string;
-  /** Origin-verify shared secret — CloudFront sends this header to API Gateway (DDR-028) */
-  originVerifySecret: string;
   /**
    * Frontend S3 bucket name (from StorageStack — DDR-045: stateful/stateless split).
    * Passed as a string to avoid cross-stack OAC cycle (bucket policy ↔ distribution).
@@ -34,6 +31,13 @@ export class FrontendStack extends cdk.Stack {
 
   constructor(scope: Construct, id: string, props: FrontendStackProps) {
     super(scope, id, props);
+
+    // Read stable values from SSM — decoupled from BackendStack (DDR-054: deploy speed).
+    // These values are written by BackendStack and only change on first deploy.
+    const apiEndpoint = ssm.StringParameter.valueForStringParameter(
+      this, '/ai-social-media/api-endpoint');
+    const originVerifySecret = ssm.StringParameter.valueForStringParameter(
+      this, '/ai-social-media/origin-verify-secret');
 
     // Import bucket by name — avoids cross-stack OAC cycle (DDR-045)
     // The bucket is created in StorageStack with autoDeleteObjects: true.
@@ -108,14 +112,15 @@ export class FrontendStack extends cdk.Stack {
     // API Gateway origin: extract domain from endpoint URL (https://xxx.execute-api...).
     // CloudFront proxies /api/* to API Gateway so the SPA makes same-origin requests.
     // The x-origin-verify custom header ensures only CloudFront can reach the API (DDR-028 Problem 1).
-    const apiDomain = cdk.Fn.select(2, cdk.Fn.split('/', props.apiEndpoint));
+    const apiDomain = cdk.Fn.select(2, cdk.Fn.split('/', apiEndpoint));
     const apiOrigin = new origins.HttpOrigin(apiDomain, {
       customHeaders: {
-        'x-origin-verify': props.originVerifySecret,
+        'x-origin-verify': originVerifySecret,
       },
     });
 
     this.distribution = new cloudfront.Distribution(this, 'Distribution', {
+      comment: 'AI Social Media Helper — Preact SPA frontend + /api/* proxy to API Gateway',
       defaultBehavior: {
         origin: s3Origin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,

@@ -6,6 +6,7 @@ import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import { Construct } from 'constructs';
 
@@ -184,6 +185,23 @@ export class BackendStack extends cdk.Stack {
       'ENHANCE_LAMBDA_ARN',
       lambdas.enhancementProcessor.functionArn,
     );
+
+    // =====================================================================
+    // SSM Parameters for cross-stack decoupling (DDR-054: deploy speed)
+    // =====================================================================
+    // These values are stable after first deploy. FrontendStack reads them
+    // from SSM instead of taking cross-stack props, removing the
+    // Backend → Frontend dependency from the CDK graph.
+    new ssm.StringParameter(this, 'ApiEndpointParam', {
+      parameterName: '/ai-social-media/api-endpoint',
+      stringValue: this.httpApi.apiEndpoint,
+      description: 'API Gateway endpoint URL (consumed by FrontendStack via SSM)',
+    });
+    new ssm.StringParameter(this, 'OriginVerifyParam', {
+      parameterName: '/ai-social-media/origin-verify-secret',
+      stringValue: originVerifySecret,
+      description: 'Origin-verify shared secret (consumed by FrontendStack via SSM)',
+    });
 
     // =====================================================================
     // CloudFormation Outputs

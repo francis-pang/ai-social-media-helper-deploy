@@ -96,6 +96,7 @@ export class BackendPipelineStack extends cdk.Stack {
 
     const backendBuild = new codebuild.PipelineProject(this, 'BackendBuild', {
       projectName: 'AiSocialMediaBackendBuild',
+      description: 'Build 11 Lambda Docker images (8 ECR Private + 3 ECR Public) with conditional rebuild detection',
       environment: {
         buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
         computeType: codebuild.ComputeType.MEDIUM,
@@ -357,6 +358,7 @@ export class BackendPipelineStack extends cdk.Stack {
 
     const deployProject = new codebuild.PipelineProject(this, 'DeployProject', {
       projectName: 'AiSocialMediaBackendDeploy',
+      description: 'Deploy built Docker images to all 11 Lambda functions and wait for update completion',
       environment: {
         buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
         computeType: codebuild.ComputeType.SMALL,

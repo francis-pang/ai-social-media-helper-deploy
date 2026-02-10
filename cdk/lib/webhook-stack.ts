@@ -49,6 +49,7 @@ export class WebhookStack extends cdk.Stack {
     // Lambda Function (DDR-044: 128 MB, 10s, ECR Private from RegistryStack DDR-046)
     // =========================================================================
     this.webhookHandler = new lambda.DockerImageFunction(this, 'WebhookHandler', {
+      description: 'Meta webhook — verifies GET challenges and processes Instagram notification events via HMAC',
       code: lambda.DockerImageCode.fromEcr(props.webhookEcrRepo, { tagOrDigest: 'webhook-latest' }),
       timeout: cdk.Duration.seconds(10),
       memorySize: 128,
@@ -74,6 +75,7 @@ export class WebhookStack extends cdk.Stack {
     // =========================================================================
     const httpApi = new apigwv2.HttpApi(this, 'WebhookApi', {
       apiName: 'AiSocialMediaWebhookApi',
+      description: 'Webhook API — unauthenticated endpoints for Meta webhook events and Instagram OAuth callback',
       // No CORS — server-to-server from Meta
     });
 
@@ -102,6 +104,7 @@ export class WebhookStack extends cdk.Stack {
     // OAuth Lambda (DDR-048: Instagram token exchange)
     // =========================================================================
     this.oauthHandler = new lambda.DockerImageFunction(this, 'OAuthHandler', {
+      description: 'Instagram OAuth — exchanges authorization code for long-lived token and stores in SSM',
       code: lambda.DockerImageCode.fromEcr(props.oauthEcrRepo, { tagOrDigest: 'oauth-latest' }),
       timeout: cdk.Duration.seconds(10),
       memorySize: 128,
@@ -156,6 +159,7 @@ export class WebhookStack extends cdk.Stack {
     const apiOrigin = new origins.HttpOrigin(apiDomain);
 
     const distribution = new cloudfront.Distribution(this, 'WebhookDistribution', {
+      comment: 'AI Social Media Helper — Meta webhook notifications + Instagram OAuth callback',
       defaultBehavior: {
         origin: apiOrigin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,
