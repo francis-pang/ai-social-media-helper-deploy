@@ -19,7 +19,7 @@ export interface StorageStackProps extends cdk.StackProps {
  * 1. S3 bucket for ephemeral media uploads (24h auto-expiration)
  * 2. DynamoDB table for multi-step session state (DDR-035)
  * 3. S3 bucket for frontend assets (CloudFront OAC)
- * 4. S3 bucket for log archival (Glacier lifecycle, RETAIN)
+ * 4. S3 bucket for log archival (Deep Archive lifecycle, RETAIN)
  * 5. S3 bucket for metric archival (optional, RETAIN)
  * 6. S3 bucket for backend pipeline artifacts (7d lifecycle)
  * 7. S3 bucket for frontend pipeline artifacts (7d lifecycle)
@@ -100,7 +100,7 @@ export class StorageStack extends cdk.Stack {
     });
 
     // =========================================================================
-    // 4. Log Archive Bucket (tiered lifecycle, RETAIN — DDR-045: moved from OperationsStack)
+    // 4. Log Archive Bucket (Deep Archive lifecycle, RETAIN — DDR-045: moved from OperationsStack)
     // =========================================================================
     this.logArchiveBucket = new s3.Bucket(this, 'LogArchive', {
       bucketName: `ai-social-media-logs-archive-${this.account}`,
@@ -113,7 +113,7 @@ export class StorageStack extends cdk.Stack {
           prefix: 'logs/info-and-above/',
           transitions: [
             {
-              storageClass: s3.StorageClass.GLACIER,
+              storageClass: s3.StorageClass.DEEP_ARCHIVE,
               transitionAfter: cdk.Duration.days(30),
             },
           ],
@@ -124,7 +124,7 @@ export class StorageStack extends cdk.Stack {
           prefix: 'logs/debug/',
           transitions: [
             {
-              storageClass: s3.StorageClass.GLACIER,
+              storageClass: s3.StorageClass.DEEP_ARCHIVE,
               transitionAfter: cdk.Duration.days(14),
             },
           ],
@@ -147,11 +147,11 @@ export class StorageStack extends cdk.Stack {
             id: 'metrics-tiering',
             transitions: [
               {
-                storageClass: s3.StorageClass.INFREQUENT_ACCESS,
+                storageClass: s3.StorageClass.ONE_ZONE_INFREQUENT_ACCESS,
                 transitionAfter: cdk.Duration.days(90),
               },
               {
-                storageClass: s3.StorageClass.GLACIER,
+                storageClass: s3.StorageClass.DEEP_ARCHIVE,
                 transitionAfter: cdk.Duration.days(365),
               },
             ],
