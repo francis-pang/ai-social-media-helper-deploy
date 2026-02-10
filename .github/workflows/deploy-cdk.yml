@@ -101,6 +101,8 @@ jobs:
         run: npx cdk diff --all 2>&1 || true
 
       - name: CDK Deploy
+        env:
+          CODESTAR_CONNECTION_ARN: ${{ secrets.CODESTAR_CONNECTION_ARN }}
         run: |
           # Determine deploy target
           TARGET="${{ github.event.inputs.deploy_target || 'core' }}"
@@ -122,6 +124,7 @@ jobs:
               npx cdk deploy --all --method=direct --require-approval=never --concurrency 5
               ;;
             pipelines)
+              # Uses CODESTAR_CONNECTION_ARN secret if set, else SSM /ai-social-media/codestar-connection-arn
               npx cdk deploy \
                 AiSocialMediaBackendPipeline \
                 AiSocialMediaFrontendPipeline \

@@ -55,7 +55,8 @@ npx aws-cdk bootstrap
 
 - CDK app entrypoint: `cdk/bin/cdk.ts`
 - Default region fallback is `us-east-1` when `CDK_DEFAULT_REGION` is unset
-- `CODESTAR_CONNECTION_ARN` can be provided via environment variable for pipeline stacks
+- CodeStar connection ARN for pipeline stacks: set `CODESTAR_CONNECTION_ARN` env, or create SSM parameter:
+  `aws ssm put-parameter --name /ai-social-media/codestar-connection-arn --value "arn:aws:codeconnections:us-east-1:ACCOUNT:connection/ID" --type String`
 - Metric archive is enabled by default; disable with CDK context:
 
 ```bash

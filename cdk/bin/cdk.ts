@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import * as cdk from 'aws-cdk-lib/core';
+import * as ssm from 'aws-cdk-lib/aws-ssm';
 import { StorageStack } from '../lib/storage-stack';
 import { RegistryStack } from '../lib/registry-stack';
 import { FrontendStack } from '../lib/frontend-stack';
@@ -23,10 +24,6 @@ const env: cdk.Environment = {
   region: process.env.CDK_DEFAULT_REGION || 'us-east-1',
 };
 
-// CodeStar connection ARN — read from environment or use default (DDR-028 Problem 15)
-const codeStarConnectionArn = process.env.CODESTAR_CONNECTION_ARN
-  || 'arn:aws:codeconnections:us-east-1:123456789012:connection/YOUR_CONNECTION_ID';
-
 // Metric archive enabled by default (DDR-047); disable with -c enableMetricArchive=false
 const enableMetricArchive = app.node.tryGetContext('enableMetricArchive') !== 'false';
 
@@ -40,6 +37,14 @@ const storage = new StorageStack(app, 'AiSocialMediaStorage', {
   env,
   enableMetricArchive,
 });
+
+// CodeStar connection ARN — env, then SSM lookup (DDR-028). Never use placeholder.
+const codeStarConnectionArn = process.env.CODESTAR_CONNECTION_ARN
+  || ssm.StringParameter.valueFromLookup(storage, '/ai-social-media/codestar-connection-arn');
+const PLACEHOLDER_ARN = 'arn:aws:codeconnections:us-east-1:123456789012:connection/YOUR_CONNECTION_ID';
+if (codeStarConnectionArn === PLACEHOLDER_ARN || codeStarConnectionArn.includes('YOUR_CONNECTION_ID')) {
+  throw new Error('CodeStar connection ARN must be set via CODESTAR_CONNECTION_ARN env or SSM /ai-social-media/codestar-connection-arn. Do not deploy pipeline stacks with placeholder.');
+}
 
 // =========================================================================
 // 2. Registry (DDR-046: all ECR repos in one stack, no Lambdas)

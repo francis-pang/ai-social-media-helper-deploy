@@ -14,5 +14,8 @@ cdk-pipeline-out
 # TypeScript incremental compilation cache (DDR-047)
 .tsbuildinfo
 
+# CDK context (contains SSM lookup results; do not commit connection ARN)
+cdk.context.json
+
 # Local build artifacts for initial deployment
 .build
