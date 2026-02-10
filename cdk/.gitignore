@@ -7,6 +7,10 @@ node_modules
 .cdk.staging
 cdk.out
 
+# CDK synthesized output directories (contain AWS account IDs)
+cdk-deploy-out
+cdk-pipeline-out
+
 # TypeScript incremental compilation cache (DDR-047)
 .tsbuildinfo
 
