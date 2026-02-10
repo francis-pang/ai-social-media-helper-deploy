@@ -22,6 +22,11 @@ export interface ProcessingLambdasProps {
 /**
  * ProcessingLambdas creates all 9 Lambda functions and applies IAM permissions (DDR-035, DDR-053).
  *
+ * NOTE: This is a plain class (not a CDK Construct) to preserve CloudFormation
+ * logical IDs. All resources are created with `scope` as their parent, keeping
+ * them at the stack root level. Moving resources into a Construct subtree would
+ * change their logical IDs and cause CloudFormation to replace them.
+ *
  * Lambda inventory:
  * - API: HTTP handler (256 MB, 30s)
  * - Triage: Step Functions triage pipeline (2 GB, 10 min)
@@ -52,7 +57,6 @@ export class ProcessingLambdas extends Construct {
 
   constructor(scope: Construct, id: string, props: ProcessingLambdasProps) {
     super(scope, id);
-
     // Shared environment variables for Lambdas that need Gemini
     const sharedEnv = {
       MEDIA_BUCKET_NAME: props.mediaBucket.bucketName,
@@ -65,7 +69,7 @@ export class ProcessingLambdas extends Construct {
     // =====================================================================
 
     // --- 1. API Lambda (256 MB, 30s, ECR Private light) ---
-    this.apiHandler = new lambda.DockerImageFunction(this, 'ApiHandler', {
+    this.apiHandler = new lambda.DockerImageFunction(scope, 'ApiHandler', {
       code: lambda.DockerImageCode.fromEcr(props.lightEcrRepo, { tagOrDigest: 'api-latest' }),
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
@@ -79,7 +83,7 @@ export class ProcessingLambdas extends Construct {
     });
 
     // --- 2. Triage Lambda (DDR-053: 2 GB, 10 min, ECR Private light) ---
-    this.triageProcessor = new lambda.DockerImageFunction(this, 'TriageProcessor', {
+    this.triageProcessor = new lambda.DockerImageFunction(scope, 'TriageProcessor', {
       code: lambda.DockerImageCode.fromEcr(props.lightEcrRepo, { tagOrDigest: 'triage-latest' }),
       timeout: cdk.Duration.minutes(10),
       memorySize: 2048,
@@ -88,7 +92,7 @@ export class ProcessingLambdas extends Construct {
     });
 
     // --- 3. Description Lambda (DDR-053: 2 GB, 5 min, ECR Private light) ---
-    this.descriptionProcessor = new lambda.DockerImageFunction(this, 'DescriptionProcessor', {
+    this.descriptionProcessor = new lambda.DockerImageFunction(scope, 'DescriptionProcessor', {
       code: lambda.DockerImageCode.fromEcr(props.lightEcrRepo, { tagOrDigest: 'desc-latest' }),
       timeout: cdk.Duration.minutes(5),
       memorySize: 2048,
@@ -97,7 +101,7 @@ export class ProcessingLambdas extends Construct {
     });
 
     // --- 4. Download Lambda (DDR-053: 2 GB, 10 min, ECR Private light) ---
-    this.downloadProcessor = new lambda.DockerImageFunction(this, 'DownloadProcessor', {
+    this.downloadProcessor = new lambda.DockerImageFunction(scope, 'DownloadProcessor', {
       code: lambda.DockerImageCode.fromEcr(props.lightEcrRepo, { tagOrDigest: 'download-latest' }),
       timeout: cdk.Duration.minutes(10),
       memorySize: 2048,
@@ -110,7 +114,7 @@ export class ProcessingLambdas extends Construct {
     });
 
     // --- 5. Publish Lambda (DDR-053: 256 MB, 5 min, ECR Private light) ---
-    this.publishProcessor = new lambda.DockerImageFunction(this, 'PublishProcessor', {
+    this.publishProcessor = new lambda.DockerImageFunction(scope, 'PublishProcessor', {
       code: lambda.DockerImageCode.fromEcr(props.lightEcrRepo, { tagOrDigest: 'publish-latest' }),
       timeout: cdk.Duration.minutes(5),
       memorySize: 256,
@@ -125,7 +129,7 @@ export class ProcessingLambdas extends Construct {
     });
 
     // --- 6. Thumbnail Lambda (512 MB, 2 min, ECR Private heavy) ---
-    this.thumbnailProcessor = new lambda.DockerImageFunction(this, 'ThumbnailProcessor', {
+    this.thumbnailProcessor = new lambda.DockerImageFunction(scope, 'ThumbnailProcessor', {
       code: lambda.DockerImageCode.fromEcr(props.heavyEcrRepo, { tagOrDigest: 'thumb-latest' }),
       timeout: cdk.Duration.minutes(2),
       memorySize: 512,
@@ -134,7 +138,7 @@ export class ProcessingLambdas extends Construct {
     });
 
     // --- 7. Selection Lambda (4 GB, 15 min, ECR Private heavy) ---
-    this.selectionProcessor = new lambda.DockerImageFunction(this, 'SelectionProcessor', {
+    this.selectionProcessor = new lambda.DockerImageFunction(scope, 'SelectionProcessor', {
       code: lambda.DockerImageCode.fromEcr(props.heavyEcrRepo, { tagOrDigest: 'select-latest' }),
       timeout: cdk.Duration.minutes(15),
       memorySize: 4096,
@@ -143,7 +147,7 @@ export class ProcessingLambdas extends Construct {
     });
 
     // --- 8. Enhancement Lambda (DDR-053: 2 GB, 5 min, ECR Private light) ---
-    this.enhancementProcessor = new lambda.DockerImageFunction(this, 'EnhancementProcessor', {
+    this.enhancementProcessor = new lambda.DockerImageFunction(scope, 'EnhancementProcessor', {
       code: lambda.DockerImageCode.fromEcr(props.lightEcrRepo, { tagOrDigest: 'api-latest' }),
       timeout: cdk.Duration.minutes(5),
       memorySize: 2048,
@@ -152,7 +156,7 @@ export class ProcessingLambdas extends Construct {
     });
 
     // --- 9. Video Lambda (4 GB, 15 min, ECR Private heavy) ---
-    this.videoProcessor = new lambda.DockerImageFunction(this, 'VideoProcessor', {
+    this.videoProcessor = new lambda.DockerImageFunction(scope, 'VideoProcessor', {
       code: lambda.DockerImageCode.fromEcr(props.heavyEcrRepo, { tagOrDigest: 'select-latest' }),
       timeout: cdk.Duration.minutes(15),
       memorySize: 4096,
@@ -183,7 +187,7 @@ export class ProcessingLambdas extends Construct {
     }
 
     // AI Lambdas: SSM read for Gemini API key (DDR-053: not needed by download/publish)
-    const stack = cdk.Stack.of(this);
+    const stack = cdk.Stack.of(scope);
     const geminiKeyArn = `arn:aws:ssm:${stack.region}:${stack.account}:parameter/ai-social-media/prod/gemini-api-key`;
     const aiLambdas = [
       this.apiHandler,
