@@ -189,7 +189,7 @@ export class BackendPipelineStack extends cdk.Stack {
               // --- Parallel Docker builds in 3 waves (DDR-047) ---
               // Helper function for building images with --cache-from
               // --provenance=false: required for Lambda-compatible Docker image manifest (avoids OCI index)
-              'build_image() { local cmd=$1 df=$2 tags=$3 cache=$4; echo "Building $cmd..."; docker build --provenance=false --cache-from "$cache" --build-arg CMD_TARGET="$cmd" -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"; }',
+              'build_image() { local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"; echo "Building $cmd..."; docker build --provenance=false --cache-from "$cache" --build-arg CMD_TARGET="$cmd" $extra_args -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"; }',
 
               // Wave 1: Light images (fast, ~30s each, no ffmpeg, DDR-053)
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_API" = "true" ]) && touch /tmp/built-api && build_image media-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:api-$COMMIT -t $PRIVATE_LIGHT_URI:api-latest" "$PRIVATE_LIGHT_URI:api-latest" &',
@@ -206,9 +206,9 @@ export class BackendPipelineStack extends cdk.Stack {
               'wait',
 
               // Wave 3: Heavy images (slower, ~60-90s each, includes ffmpeg)
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_THUMB" = "true" ]) && touch /tmp/built-thumb && build_image thumbnail-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest -t $PUBLIC_HEAVY_URI:thumb-$COMMIT -t $PUBLIC_HEAVY_URI:thumb-latest" "$PRIVATE_HEAVY_URI:select-latest" &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_SELECT" = "true" ]) && touch /tmp/built-select && build_image selection-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest" "$PRIVATE_HEAVY_URI:select-latest" &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_VIDEO" = "true" ]) && touch /tmp/built-video && build_image video-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_THUMB" = "true" ]) && touch /tmp/built-thumb && build_image thumbnail-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest -t $PUBLIC_HEAVY_URI:thumb-$COMMIT -t $PUBLIC_HEAVY_URI:thumb-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_SELECT" = "true" ]) && touch /tmp/built-select && build_image selection-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_VIDEO" = "true" ]) && touch /tmp/built-video && build_image video-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" &',
               'wait',
 
               // Log build summary
