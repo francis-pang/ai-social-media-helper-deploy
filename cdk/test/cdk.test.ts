@@ -27,8 +27,6 @@ describe('AiSocialMedia Infrastructure', () => {
   });
   const frontend = new FrontendStack(app, 'TestFrontend', {
     env,
-    apiEndpoint: backend.httpApi.apiEndpoint,
-    originVerifySecret: 'test-origin-verify-secret',
     frontendBucketName: storage.frontendBucket.bucketName,
   });
   const frontendPipeline = new FrontendPipelineStack(app, 'TestFrontendPipeline', {
