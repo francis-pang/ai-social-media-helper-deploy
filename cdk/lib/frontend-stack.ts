@@ -56,7 +56,8 @@ export class FrontendStack extends cdk.Stack {
         contentSecurityPolicy: {
           contentSecurityPolicy: [
             "default-src 'self'",
-            "img-src 'self' blob: data:",
+            "img-src 'self' blob: data: https://*.s3.us-east-1.amazonaws.com https://*.s3.amazonaws.com",
+            "media-src 'self' https://*.s3.us-east-1.amazonaws.com https://*.s3.amazonaws.com",
             "style-src 'self' 'unsafe-inline'",
             "connect-src 'self' https://*.s3.us-east-1.amazonaws.com https://*.s3.amazonaws.com https://cognito-idp.us-east-1.amazonaws.com",
           ].join('; '),

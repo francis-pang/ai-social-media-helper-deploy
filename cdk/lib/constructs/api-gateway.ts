@@ -119,5 +119,14 @@ export class ApiGateway extends Construct {
       methods: [apigwv2.HttpMethod.GET],
       integration: lambdaIntegration,
     });
+
+    // Thumbnail endpoint without JWT auth — served via <img src=...> which cannot
+    // send Authorization headers. Still protected by CloudFront's x-origin-verify
+    // custom header (DDR-028), so direct API Gateway access is blocked.
+    this.httpApi.addRoutes({
+      path: '/api/media/thumbnail',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: lambdaIntegration,
+    });
   }
 }
