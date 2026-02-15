@@ -264,6 +264,25 @@ export class StorageStack extends cdk.Stack {
     });
 
     // =========================================================================
+    // Tag CDK custom resource provider (DDR-049: cost tracking completeness)
+    // =========================================================================
+    // The autoDeleteObjects custom resource provider uses CfnResource (not typed
+    // L1 constructs), so cdk.Tags.of(app) doesn't reach its Lambda and Role.
+    const autoDeleteProvider = this.node.tryFindChild(
+      'Custom::S3AutoDeleteObjectsCustomResourceProvider',
+    );
+    if (autoDeleteProvider) {
+      const handler = autoDeleteProvider.node.tryFindChild('Handler') as cdk.CfnResource | undefined;
+      if (handler) {
+        handler.addPropertyOverride('Tags', [{ Key: 'Project', Value: 'ai-social-media-helper' }]);
+      }
+      const role = autoDeleteProvider.node.tryFindChild('Role') as cdk.CfnResource | undefined;
+      if (role) {
+        role.addPropertyOverride('Tags', [{ Key: 'Project', Value: 'ai-social-media-helper' }]);
+      }
+    }
+
+    // =========================================================================
     // Outputs
     // =========================================================================
     new cdk.CfnOutput(this, 'MediaBucketName', {
