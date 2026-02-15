@@ -8,7 +8,7 @@ This repository is intentionally deployment-focused. Application source code liv
 
 ## Repository Layout
 
-- `cdk/` - AWS CDK TypeScript app that defines all infrastructure stacks and deployment pipelines
+- `cdk/` - AWS CDK TypeScript app: `lib/` (stacks), `lib/constructs/` (backend-build-project, backend-deploy-project, lambda-factory, etc.), `test/` (per-stack tests + test-helpers)
 - `LICENSE` - project license
 
 ## Stack Overview

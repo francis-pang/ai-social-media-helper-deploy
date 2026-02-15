@@ -3,10 +3,10 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as codepipeline from 'aws-cdk-lib/aws-codepipeline';
 import * as codepipeline_actions from 'aws-cdk-lib/aws-codepipeline-actions';
-import * as codebuild from 'aws-cdk-lib/aws-codebuild';
 import * as lambda from 'aws-cdk-lib/aws-lambda';
-import * as iam from 'aws-cdk-lib/aws-iam';
 import { Construct } from 'constructs';
+import { createBackendBuildProject } from './constructs/backend-build-project.js';
+import { createBackendDeployProject } from './constructs/backend-deploy-project.js';
 
 export interface BackendPipelineStackProps extends cdk.StackProps {
   /** ECR Private light repository (API Lambda — proprietary code, DDR-041) */
@@ -85,427 +85,39 @@ export class BackendPipelineStack extends cdk.Stack {
     });
 
     // --- Backend Build (11 Docker images: 8 private + 3 public, DDR-053) ---
-    // ECR Private repo URIs (account-specific)
-    const privateLight = props.lightEcrRepo.repositoryUri;
-    const privateHeavy = props.heavyEcrRepo.repositoryUri;
-    const privateWebhook = props.webhookEcrRepo.repositoryUri;
-    const privateOauth = props.oauthEcrRepo.repositoryUri;
-    // ECR Public repo URIs (public.ecr.aws/<alias>/<repo-name>)
-    // The public registry alias is resolved after the first push. We construct
-    // the URI at build time using the AWS CLI to fetch the registry alias.
-    const publicLightName = props.publicLightRepoName;
-    const publicHeavyName = props.publicHeavyRepoName;
-
-    const backendBuild = new codebuild.PipelineProject(this, 'BackendBuild', {
-      projectName: 'AiSocialMediaBackendBuild',
-      description: 'Build 11 Lambda Docker images (8 ECR Private + 3 ECR Public) with conditional rebuild detection',
-      environment: {
-        buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
-        computeType: codebuild.ComputeType.MEDIUM,
-        privileged: true, // Required for Docker-in-Docker
-      },
-      // S3 cache for Go modules and build cache (DDR-047)
-      cache: codebuild.Cache.bucket(artifactBucket, {
-        prefix: 'codebuild-cache/backend',
-      }),
-      environmentVariables: {
-        PRIVATE_LIGHT_URI: { value: privateLight },
-        PRIVATE_HEAVY_URI: { value: privateHeavy },
-        PRIVATE_WEBHOOK_URI: { value: privateWebhook },
-        PRIVATE_OAUTH_URI: { value: privateOauth },
-        PUBLIC_LIGHT_NAME: { value: publicLightName },
-        PUBLIC_HEAVY_NAME: { value: publicHeavyName },
-        AWS_ACCOUNT_ID: { value: this.account },
-        AWS_REGION_NAME: { value: this.region },
-      },
-      buildSpec: codebuild.BuildSpec.fromObject({
-        version: '0.2',
-        phases: {
-          install: {
-            'runtime-versions': {
-              golang: '1.24',
-            },
-          },
-          pre_build: {
-            commands: [
-              // Enable Docker BuildKit for cache mounts and parallel stages (DDR-047)
-              'export DOCKER_BUILDKIT=1',
-              // Authenticate with ECR Private
-              'aws ecr get-login-password --region $AWS_REGION_NAME | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION_NAME.amazonaws.com',
-              // Authenticate with ECR Public (always us-east-1, DDR-041)
-              'aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws',
-              // Resolve ECR Public registry alias for URI construction
-              'export PUBLIC_ALIAS=$(aws ecr-public describe-registries --region us-east-1 --query "registries[0].aliases[0].name" --output text)',
-              'export PUBLIC_LIGHT_URI=public.ecr.aws/$PUBLIC_ALIAS/$PUBLIC_LIGHT_NAME',
-              'export PUBLIC_HEAVY_URI=public.ecr.aws/$PUBLIC_ALIAS/$PUBLIC_HEAVY_NAME',
-              'echo "ECR Public alias: $PUBLIC_ALIAS"',
-              'echo "Public light URI: $PUBLIC_LIGHT_URI"',
-              'echo "Public heavy URI: $PUBLIC_HEAVY_URI"',
-              // Pull previous :latest images for Docker layer cache (DDR-047, soft-fail on first build)
-              'echo "Pulling previous images for layer cache..."',
-              'docker pull $PRIVATE_LIGHT_URI:api-latest || true',
-              'docker pull $PRIVATE_HEAVY_URI:select-latest || true',
-              'docker pull $PRIVATE_WEBHOOK_URI:webhook-latest || true',
-              'docker pull $PRIVATE_OAUTH_URI:oauth-latest || true',
-              // Go vulnerability scanning
-              'go install golang.org/x/vuln/cmd/govulncheck@latest',
-              'govulncheck ./... || echo "WARN: govulncheck found vulnerabilities (non-blocking)"',
-            ],
-          },
-          build: {
-            commands: [
-              'COMMIT=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c1-7)',
-
-              // --- Conditional build detection (DDR-047: skip unchanged images) ---
-              // Fetch the last successful build commit from SSM
-              'LAST_BUILD=$(aws ssm get-parameter --name /ai-social-media/last-build-commit --query "Parameter.Value" --output text 2>/dev/null || echo "")',
-              'BUILD_ALL=true',
-              // Per-Lambda flags (only used when shared code did NOT change, DDR-053)
-              'BUILD_API=false; BUILD_TRIAGE=false; BUILD_DESC=false; BUILD_DOWNLOAD=false; BUILD_PUBLISH=false',
-              'BUILD_ENHANCE=false; BUILD_WEBHOOK=false; BUILD_OAUTH=false',
-              'BUILD_THUMB=false; BUILD_SELECT=false; BUILD_VIDEO=false; BUILD_MEDIAPROCESS=false',
-
-              // Determine which images need rebuilding based on changed files
-              'if [ -n "$LAST_BUILD" ] && git rev-parse "$LAST_BUILD" >/dev/null 2>&1; then '
-                + 'CHANGED=$(git diff --name-only "$LAST_BUILD" HEAD); '
-                + 'echo "=== Changed files since last build ($LAST_BUILD) ==="; echo "$CHANGED"; '
-                + 'if echo "$CHANGED" | grep -qE "^(internal/|go\\.mod|go\\.sum|cmd/media-lambda/Dockerfile\\.)"; then '
-                  + 'echo "Shared code or Dockerfile changed — rebuilding ALL images"; BUILD_ALL=true; '
-                + 'else '
-                  + 'BUILD_ALL=false; '
-                  + 'echo "$CHANGED" | grep -q "^cmd/media-lambda/" && BUILD_API=true; '
-                  + 'echo "$CHANGED" | grep -q "^cmd/triage-lambda/" && BUILD_TRIAGE=true; '
-                  + 'echo "$CHANGED" | grep -q "^cmd/description-lambda/" && BUILD_DESC=true; '
-                  + 'echo "$CHANGED" | grep -q "^cmd/download-lambda/" && BUILD_DOWNLOAD=true; '
-                  + 'echo "$CHANGED" | grep -q "^cmd/publish-lambda/" && BUILD_PUBLISH=true; '
-                  + 'echo "$CHANGED" | grep -q "^cmd/enhance-lambda/" && BUILD_ENHANCE=true; '
-                  + 'echo "$CHANGED" | grep -q "^cmd/webhook-lambda/" && BUILD_WEBHOOK=true; '
-                  + 'echo "$CHANGED" | grep -q "^cmd/oauth-lambda/" && BUILD_OAUTH=true; '
-                  + 'echo "$CHANGED" | grep -q "^cmd/thumbnail-lambda/" && BUILD_THUMB=true; '
-                  + 'echo "$CHANGED" | grep -q "^cmd/selection-lambda/" && BUILD_SELECT=true; '
-                  + 'echo "$CHANGED" | grep -q "^cmd/video-lambda/" && BUILD_VIDEO=true; '
-                  + 'echo "$CHANGED" | grep -q "^cmd/media-process-lambda/" && BUILD_MEDIAPROCESS=true; '
-                  + 'echo "Selective build: API=$BUILD_API TRIAGE=$BUILD_TRIAGE DESC=$BUILD_DESC DOWNLOAD=$BUILD_DOWNLOAD PUBLISH=$BUILD_PUBLISH ENHANCE=$BUILD_ENHANCE WEBHOOK=$BUILD_WEBHOOK OAUTH=$BUILD_OAUTH THUMB=$BUILD_THUMB SELECT=$BUILD_SELECT VIDEO=$BUILD_VIDEO MEDIAPROCESS=$BUILD_MEDIAPROCESS"; '
-                + 'fi; '
-              + 'else echo "No previous build commit found — rebuilding ALL images"; fi',
-
-              // --- Parallel Docker builds in 3 waves (DDR-047) ---
-              // Helper function for building images with --cache-from
-              // --provenance=false: required for Lambda-compatible Docker image manifest (avoids OCI index)
-              // set -o pipefail ensures docker build failures propagate through tee
-              'build_image() { set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"; echo "Building $cmd..."; docker build --provenance=false --cache-from "$cache" --build-arg CMD_TARGET="$cmd" $extra_args -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"; }',
-
-              // IMPORTANT: Each wave combines all builds + wait into a SINGLE command.
-              // CodeBuild runs each command array entry in its own shell process, so
-              // a standalone `wait` cannot see background processes from previous commands.
-              // The /tmp/built-* flag is created AFTER build success (&&) to avoid
-              // false positives when the build fails.
-
-              // Wave 1: Light images (fast, ~30s each, no ffmpeg, DDR-053)
-              [
-                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_API" = "true" ]) && (build_image media-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:api-$COMMIT -t $PRIVATE_LIGHT_URI:api-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-api) &',
-                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_TRIAGE" = "true" ]) && (build_image triage-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:triage-$COMMIT -t $PRIVATE_LIGHT_URI:triage-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-triage) &',
-                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DESC" = "true" ]) && (build_image description-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:desc-$COMMIT -t $PRIVATE_LIGHT_URI:desc-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-desc) &',
-                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DOWNLOAD" = "true" ]) && (build_image download-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:download-$COMMIT -t $PRIVATE_LIGHT_URI:download-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-download) &',
-                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_PUBLISH" = "true" ]) && (build_image publish-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:publish-$COMMIT -t $PRIVATE_LIGHT_URI:publish-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-publish) &',
-                'wait',
-              ].join('\n'),
-
-              // Wave 2: More light images (DDR-053: split wave to avoid too many concurrent builds)
-              [
-                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_ENHANCE" = "true" ]) && (build_image enhance-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest -t $PUBLIC_LIGHT_URI:enhance-$COMMIT -t $PUBLIC_LIGHT_URI:enhance-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-enhance) &',
-                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_WEBHOOK" = "true" ]) && (build_image webhook-lambda Dockerfile.light "-t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest" "$PRIVATE_WEBHOOK_URI:webhook-latest" && touch /tmp/built-webhook) &',
-                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_OAUTH" = "true" ]) && (build_image oauth-lambda Dockerfile.light "-t $PRIVATE_OAUTH_URI:oauth-$COMMIT -t $PRIVATE_OAUTH_URI:oauth-latest" "$PRIVATE_OAUTH_URI:oauth-latest" && touch /tmp/built-oauth) &',
-                'wait',
-              ].join('\n'),
-
-              // Wave 3: Heavy images (slower, ~60-90s each, includes ffmpeg)
-              [
-                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_THUMB" = "true" ]) && (build_image thumbnail-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest -t $PUBLIC_HEAVY_URI:thumb-$COMMIT -t $PUBLIC_HEAVY_URI:thumb-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-thumb) &',
-                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_SELECT" = "true" ]) && (build_image selection-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-select) &',
-                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_VIDEO" = "true" ]) && (build_image video-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-video) &',
-                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_MEDIAPROCESS" = "true" ]) && (build_image media-process-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:mediaprocess-$COMMIT -t $PRIVATE_HEAVY_URI:mediaprocess-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-mediaprocess) &',
-                'wait',
-              ].join('\n'),
-
-              // Log build summary
-              'echo "=== Build summary ==="; for img in api triage desc download publish enhance webhook oauth thumb select video mediaprocess; do [ -f /tmp/built-$img ] && echo "  $img: BUILT" || echo "  $img: SKIPPED (unchanged)"; done',
-            ],
-          },
-          post_build: {
-            commands: [
-              // Push only images that were built (DDR-047: conditional builds)
-              // All pushes + wait combined into a single command so wait can
-              // see all background push processes (same fix as build waves).
-              [
-                'echo "Pushing built images in parallel..."',
-                // ECR Private: light images (only if built, DDR-053)
-                '[ -f /tmp/built-api ] && docker push $PRIVATE_LIGHT_URI:api-$COMMIT &',
-                '[ -f /tmp/built-api ] && docker push $PRIVATE_LIGHT_URI:api-latest &',
-                '[ -f /tmp/built-triage ] && docker push $PRIVATE_LIGHT_URI:triage-$COMMIT &',
-                '[ -f /tmp/built-triage ] && docker push $PRIVATE_LIGHT_URI:triage-latest &',
-                '[ -f /tmp/built-desc ] && docker push $PRIVATE_LIGHT_URI:desc-$COMMIT &',
-                '[ -f /tmp/built-desc ] && docker push $PRIVATE_LIGHT_URI:desc-latest &',
-                '[ -f /tmp/built-download ] && docker push $PRIVATE_LIGHT_URI:download-$COMMIT &',
-                '[ -f /tmp/built-download ] && docker push $PRIVATE_LIGHT_URI:download-latest &',
-                '[ -f /tmp/built-publish ] && docker push $PRIVATE_LIGHT_URI:publish-$COMMIT &',
-                '[ -f /tmp/built-publish ] && docker push $PRIVATE_LIGHT_URI:publish-latest &',
-                '[ -f /tmp/built-enhance ] && docker push $PRIVATE_LIGHT_URI:enhance-$COMMIT &',
-                '[ -f /tmp/built-enhance ] && docker push $PRIVATE_LIGHT_URI:enhance-latest &',
-                // ECR Private: heavy images (only if built)
-                '[ -f /tmp/built-select ] && docker push $PRIVATE_HEAVY_URI:select-$COMMIT &',
-                '[ -f /tmp/built-select ] && docker push $PRIVATE_HEAVY_URI:select-latest &',
-                '[ -f /tmp/built-thumb ] && docker push $PRIVATE_HEAVY_URI:thumb-$COMMIT &',
-                '[ -f /tmp/built-thumb ] && docker push $PRIVATE_HEAVY_URI:thumb-latest &',
-                '[ -f /tmp/built-video ] && docker push $PRIVATE_HEAVY_URI:video-$COMMIT &',
-                '[ -f /tmp/built-video ] && docker push $PRIVATE_HEAVY_URI:video-latest &',
-                '[ -f /tmp/built-mediaprocess ] && docker push $PRIVATE_HEAVY_URI:mediaprocess-$COMMIT &',
-                '[ -f /tmp/built-mediaprocess ] && docker push $PRIVATE_HEAVY_URI:mediaprocess-latest &',
-                // ECR Private: webhook (only if built, DDR-044)
-                '[ -f /tmp/built-webhook ] && docker push $PRIVATE_WEBHOOK_URI:webhook-$COMMIT &',
-                '[ -f /tmp/built-webhook ] && docker push $PRIVATE_WEBHOOK_URI:webhook-latest &',
-                // ECR Private: oauth (only if built, DDR-048)
-                '[ -f /tmp/built-oauth ] && docker push $PRIVATE_OAUTH_URI:oauth-$COMMIT &',
-                '[ -f /tmp/built-oauth ] && docker push $PRIVATE_OAUTH_URI:oauth-latest &',
-                // ECR Public images (only if built, DDR-041)
-                '[ -f /tmp/built-enhance ] && docker push $PUBLIC_LIGHT_URI:enhance-$COMMIT &',
-                '[ -f /tmp/built-enhance ] && docker push $PUBLIC_LIGHT_URI:enhance-latest &',
-                '[ -f /tmp/built-thumb ] && docker push $PUBLIC_HEAVY_URI:thumb-$COMMIT &',
-                '[ -f /tmp/built-thumb ] && docker push $PUBLIC_HEAVY_URI:thumb-latest &',
-                '[ -f /tmp/built-video ] && docker push $PUBLIC_HEAVY_URI:video-$COMMIT &',
-                '[ -f /tmp/built-video ] && docker push $PUBLIC_HEAVY_URI:video-latest &',
-                'wait',
-              ].join('\n'),
-
-              // Write image URIs for deploy stage — use new tag if built, :latest if skipped (DDR-053)
-              'API_TAG=$([ -f /tmp/built-api ] && echo "api-$COMMIT" || echo "api-latest")',
-              'TRIAGE_TAG=$([ -f /tmp/built-triage ] && echo "triage-$COMMIT" || echo "triage-latest")',
-              'DESC_TAG=$([ -f /tmp/built-desc ] && echo "desc-$COMMIT" || echo "desc-latest")',
-              'DOWNLOAD_TAG=$([ -f /tmp/built-download ] && echo "download-$COMMIT" || echo "download-latest")',
-              'PUBLISH_TAG=$([ -f /tmp/built-publish ] && echo "publish-$COMMIT" || echo "publish-latest")',
-              'ENHANCE_TAG=$([ -f /tmp/built-enhance ] && echo "enhance-$COMMIT" || echo "enhance-latest")',
-              'THUMB_TAG=$([ -f /tmp/built-thumb ] && echo "thumb-$COMMIT" || echo "thumb-latest")',
-              'SELECT_TAG=$([ -f /tmp/built-select ] && echo "select-$COMMIT" || echo "select-latest")',
-              'VIDEO_TAG=$([ -f /tmp/built-video ] && echo "video-$COMMIT" || echo "video-latest")',
-              'MEDIAPROCESS_TAG=$([ -f /tmp/built-mediaprocess ] && echo "mediaprocess-$COMMIT" || echo "mediaprocess-latest")',
-              'WEBHOOK_TAG=$([ -f /tmp/built-webhook ] && echo "webhook-$COMMIT" || echo "webhook-latest")',
-              'OAUTH_TAG=$([ -f /tmp/built-oauth ] && echo "oauth-$COMMIT" || echo "oauth-latest")',
-              `echo '{"apiImage":"'$PRIVATE_LIGHT_URI:$API_TAG'","triageImage":"'$PRIVATE_LIGHT_URI:$TRIAGE_TAG'","descImage":"'$PRIVATE_LIGHT_URI:$DESC_TAG'","downloadImage":"'$PRIVATE_LIGHT_URI:$DOWNLOAD_TAG'","publishImage":"'$PRIVATE_LIGHT_URI:$PUBLISH_TAG'","enhanceImage":"'$PRIVATE_LIGHT_URI:$ENHANCE_TAG'","thumbImage":"'$PRIVATE_HEAVY_URI:$THUMB_TAG'","selectImage":"'$PRIVATE_HEAVY_URI:$SELECT_TAG'","videoImage":"'$PRIVATE_HEAVY_URI:$VIDEO_TAG'","mediaprocessImage":"'$PRIVATE_HEAVY_URI:$MEDIAPROCESS_TAG'","webhookImage":"'$PRIVATE_WEBHOOK_URI:$WEBHOOK_TAG'","oauthImage":"'$PRIVATE_OAUTH_URI:$OAUTH_TAG'","commit":"'$COMMIT'"}' > imageDetail.json`,
-            ],
-          },
-        },
-        artifacts: {
-          files: ['imageDetail.json'],
-        },
-        cache: {
-          paths: [
-            '/go/pkg/mod/**/*',
-            '/root/.cache/go-build/**/*',
-          ],
-        },
-      }),
+    const backendBuild = createBackendBuildProject(this, 'BackendBuild', {
+      lightEcrRepo: props.lightEcrRepo,
+      heavyEcrRepo: props.heavyEcrRepo,
+      webhookEcrRepo: props.webhookEcrRepo,
+      oauthEcrRepo: props.oauthEcrRepo,
+      publicLightRepoName: props.publicLightRepoName,
+      publicHeavyRepoName: props.publicHeavyRepoName,
+      artifactBucket,
+      account: this.account,
+      region: this.region,
     });
-
-    // Grant CodeBuild permission to push images to ECR Private repos
-    props.lightEcrRepo.grantPullPush(backendBuild);
-    props.heavyEcrRepo.grantPullPush(backendBuild);
-    props.webhookEcrRepo.grantPullPush(backendBuild);
-    props.oauthEcrRepo.grantPullPush(backendBuild);
-
-    // Grant read access to the ffmpeg cache repo (ECR-mirrored mwader/static-ffmpeg)
-    backendBuild.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: [
-          'ecr:BatchGetImage',
-          'ecr:GetDownloadUrlForLayer',
-          'ecr:BatchCheckLayerAvailability',
-        ],
-        resources: [`arn:aws:ecr:${this.region}:${this.account}:repository/static-ffmpeg-cache`],
-      }),
-    );
-
-    // Grant ECR auth token permissions (private + public)
-    backendBuild.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['ecr:GetAuthorizationToken'],
-        resources: ['*'],
-      }),
-    );
-
-    // Grant ECR Public permissions (DDR-041)
-    // ECR Public uses different IAM actions from ECR Private
-    backendBuild.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: [
-          'ecr-public:GetAuthorizationToken',
-          'ecr-public:BatchCheckLayerAvailability',
-          'ecr-public:InitiateLayerUpload',
-          'ecr-public:UploadLayerPart',
-          'ecr-public:CompleteLayerUpload',
-          'ecr-public:PutImage',
-          'ecr-public:DescribeRegistries',
-        ],
-        resources: ['*'],
-      }),
-    );
-
-    // ECR Public also requires sts:GetServiceBearerToken for auth
-    backendBuild.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['sts:GetServiceBearerToken'],
-        resources: ['*'],
-      }),
-    );
-
-    // SSM read permission for conditional builds — fetch last build commit (DDR-047)
-    backendBuild.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['ssm:GetParameter'],
-        resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/last-build-commit`],
-      }),
-    );
 
     // --- Deploy (update all Lambda functions, DDR-053, DDR-061) ---
-    const allLambdas = [
-      { name: props.apiHandler.functionName, imageKey: 'apiImage' },
-      { name: props.triageProcessor.functionName, imageKey: 'triageImage' },
-      { name: props.descriptionProcessor.functionName, imageKey: 'descImage' },
-      { name: props.downloadProcessor.functionName, imageKey: 'downloadImage' },
-      { name: props.publishProcessor.functionName, imageKey: 'publishImage' },
-      { name: props.enhancementProcessor.functionName, imageKey: 'enhanceImage' },
-      { name: props.thumbnailProcessor.functionName, imageKey: 'thumbImage' },
-      { name: props.selectionProcessor.functionName, imageKey: 'selectImage' },
-      { name: props.videoProcessor.functionName, imageKey: 'videoImage' },
-      { name: props.mediaProcessProcessor.functionName, imageKey: 'mediaprocessImage' },
-      { name: props.webhookHandler.functionName, imageKey: 'webhookImage' },
-      { name: props.oauthHandler.functionName, imageKey: 'oauthImage' },
+    const deployLambdas = [
+      { functionName: props.apiHandler.functionName, functionArn: props.apiHandler.functionArn, imageKey: 'apiImage' },
+      { functionName: props.triageProcessor.functionName, functionArn: props.triageProcessor.functionArn, imageKey: 'triageImage' },
+      { functionName: props.descriptionProcessor.functionName, functionArn: props.descriptionProcessor.functionArn, imageKey: 'descImage' },
+      { functionName: props.downloadProcessor.functionName, functionArn: props.downloadProcessor.functionArn, imageKey: 'downloadImage' },
+      { functionName: props.publishProcessor.functionName, functionArn: props.publishProcessor.functionArn, imageKey: 'publishImage' },
+      { functionName: props.enhancementProcessor.functionName, functionArn: props.enhancementProcessor.functionArn, imageKey: 'enhanceImage' },
+      { functionName: props.thumbnailProcessor.functionName, functionArn: props.thumbnailProcessor.functionArn, imageKey: 'thumbImage' },
+      { functionName: props.selectionProcessor.functionName, functionArn: props.selectionProcessor.functionArn, imageKey: 'selectImage' },
+      { functionName: props.videoProcessor.functionName, functionArn: props.videoProcessor.functionArn, imageKey: 'videoImage' },
+      { functionName: props.mediaProcessProcessor.functionName, functionArn: props.mediaProcessProcessor.functionArn, imageKey: 'mediaprocessImage' },
+      { functionName: props.webhookHandler.functionName, functionArn: props.webhookHandler.functionArn, imageKey: 'webhookImage' },
+      { functionName: props.oauthHandler.functionName, functionArn: props.oauthHandler.functionArn, imageKey: 'oauthImage' },
     ];
 
-    const deployProject = new codebuild.PipelineProject(this, 'DeployProject', {
-      projectName: 'AiSocialMediaBackendDeploy',
-      description: 'Deploy built Docker images to all 11 Lambda functions and wait for update completion',
-      environment: {
-        buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
-        computeType: codebuild.ComputeType.SMALL,
-      },
-      buildSpec: codebuild.BuildSpec.fromObject({
-        version: '0.2',
-        phases: {
-          build: {
-            commands: [
-              // Parse image URIs from build output
-              'export API_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'apiImage\'])")',
-              'export ENHANCE_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'enhanceImage\'])")',
-              'export THUMB_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'thumbImage\'])")',
-              'export SELECT_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'selectImage\'])")',
-              'export VIDEO_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'videoImage\'])")',
-
-              // Update each Lambda with its specific image
-              ...allLambdas.map(({ name, imageKey }) => {
-                const envVar = imageKey.replace(/([A-Z])/g, '_$1').toUpperCase().replace(/^_/, '');
-                return `echo "Updating ${name}..." && aws lambda update-function-code --function-name ${name} --image-uri $${envVar}`;
-              }),
-
-              // Wait for all function updates to complete
-              ...allLambdas.map(({ name }) =>
-                `aws lambda wait function-updated --function-name ${name}`,
-              ),
-            ],
-          },
-        },
-      }),
+    const deployProject = createBackendDeployProject(this, 'DeployProject', {
+      lambdas: deployLambdas,
+      account: this.account,
+      region: this.region,
     });
-
-    // The deploy commands use variable env vars, so build them more explicitly.
-    // Override the buildspec with cleaner commands.
-    // Note: imageDetail.json contains URIs pointing to both ECR Private and ECR Public
-    // repos (DDR-041). The deploy stage only reads these URIs — it doesn't need
-    // Docker login since aws lambda update-function-code handles image pulling via IAM.
-    const deployCfn = deployProject.node.defaultChild as cdk.CfnResource;
-    deployCfn.addPropertyOverride('Source.BuildSpec', JSON.stringify({
-      version: '0.2',
-      phases: {
-        build: {
-          commands: [
-            // Parse image URIs from build output (DDR-053: 11 images)
-            'export API_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'apiImage\'])")',
-            'export TRIAGE_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'triageImage\'])")',
-            'export DESC_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'descImage\'])")',
-            'export DOWNLOAD_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'downloadImage\'])")',
-            'export PUBLISH_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'publishImage\'])")',
-            'export ENHANCE_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'enhanceImage\'])")',
-            'export THUMB_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'thumbImage\'])")',
-            'export SELECT_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'selectImage\'])")',
-            'export VIDEO_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'videoImage\'])")',
-            'export MEDIAPROCESS_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'mediaprocessImage\'])")',
-            'export WEBHOOK_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'webhookImage\'])")',
-            'export OAUTH_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'oauthImage\'])")',
-
-            // Update each Lambda with its specific image
-            `echo "Updating ${props.apiHandler.functionName} (private)..." && aws lambda update-function-code --function-name ${props.apiHandler.functionName} --image-uri $API_IMAGE`,
-            `echo "Updating ${props.triageProcessor.functionName} (private triage)..." && aws lambda update-function-code --function-name ${props.triageProcessor.functionName} --image-uri $TRIAGE_IMAGE`,
-            `echo "Updating ${props.descriptionProcessor.functionName} (private desc)..." && aws lambda update-function-code --function-name ${props.descriptionProcessor.functionName} --image-uri $DESC_IMAGE`,
-            `echo "Updating ${props.downloadProcessor.functionName} (private download)..." && aws lambda update-function-code --function-name ${props.downloadProcessor.functionName} --image-uri $DOWNLOAD_IMAGE`,
-            `echo "Updating ${props.publishProcessor.functionName} (private publish)..." && aws lambda update-function-code --function-name ${props.publishProcessor.functionName} --image-uri $PUBLISH_IMAGE`,
-            `echo "Updating ${props.enhancementProcessor.functionName} (public)..." && aws lambda update-function-code --function-name ${props.enhancementProcessor.functionName} --image-uri $ENHANCE_IMAGE`,
-            `echo "Updating ${props.thumbnailProcessor.functionName} (public)..." && aws lambda update-function-code --function-name ${props.thumbnailProcessor.functionName} --image-uri $THUMB_IMAGE`,
-            `echo "Updating ${props.selectionProcessor.functionName} (private)..." && aws lambda update-function-code --function-name ${props.selectionProcessor.functionName} --image-uri $SELECT_IMAGE`,
-            `echo "Updating ${props.videoProcessor.functionName} (public)..." && aws lambda update-function-code --function-name ${props.videoProcessor.functionName} --image-uri $VIDEO_IMAGE`,
-            `echo "Updating ${props.mediaProcessProcessor.functionName} (private mediaprocess)..." && aws lambda update-function-code --function-name ${props.mediaProcessProcessor.functionName} --image-uri $MEDIAPROCESS_IMAGE`,
-            `echo "Updating ${props.webhookHandler.functionName} (private webhook)..." && aws lambda update-function-code --function-name ${props.webhookHandler.functionName} --image-uri $WEBHOOK_IMAGE`,
-            `echo "Updating ${props.oauthHandler.functionName} (private oauth)..." && aws lambda update-function-code --function-name ${props.oauthHandler.functionName} --image-uri $OAUTH_IMAGE`,
-
-            // Wait for all function updates to complete
-            `aws lambda wait function-updated --function-name ${props.apiHandler.functionName}`,
-            `aws lambda wait function-updated --function-name ${props.triageProcessor.functionName}`,
-            `aws lambda wait function-updated --function-name ${props.descriptionProcessor.functionName}`,
-            `aws lambda wait function-updated --function-name ${props.downloadProcessor.functionName}`,
-            `aws lambda wait function-updated --function-name ${props.publishProcessor.functionName}`,
-            `aws lambda wait function-updated --function-name ${props.enhancementProcessor.functionName}`,
-            `aws lambda wait function-updated --function-name ${props.thumbnailProcessor.functionName}`,
-            `aws lambda wait function-updated --function-name ${props.selectionProcessor.functionName}`,
-            `aws lambda wait function-updated --function-name ${props.videoProcessor.functionName}`,
-            `aws lambda wait function-updated --function-name ${props.mediaProcessProcessor.functionName}`,
-            `aws lambda wait function-updated --function-name ${props.webhookHandler.functionName}`,
-            `aws lambda wait function-updated --function-name ${props.oauthHandler.functionName}`,
-
-            // Save successful build commit to SSM for conditional builds (DDR-047)
-            // Commit comes from imageDetail.json (written by Build stage) or CODEBUILD_RESOLVED_SOURCE_VERSION
-            'export SAVE_COMMIT=$(python3 -c "import json; d=json.load(open(\'imageDetail.json\')); print(d.get(\'commit\', \'\'))" 2>/dev/null || echo "$CODEBUILD_RESOLVED_SOURCE_VERSION")',
-            '[ -n "$SAVE_COMMIT" ] && aws ssm put-parameter --name /ai-social-media/last-build-commit --value "$SAVE_COMMIT" --type String --overwrite || echo "Skipping SSM save (no commit available)"',
-          ],
-        },
-      },
-    }));
-
-    // Grant deploy project permissions for all Lambda updates (DDR-053)
-    deployProject.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['lambda:UpdateFunctionCode', 'lambda:GetFunction', 'lambda:GetFunctionConfiguration'],
-        resources: [
-          props.apiHandler.functionArn,
-          props.triageProcessor.functionArn,
-          props.descriptionProcessor.functionArn,
-          props.downloadProcessor.functionArn,
-          props.publishProcessor.functionArn,
-          props.thumbnailProcessor.functionArn,
-          props.selectionProcessor.functionArn,
-          props.enhancementProcessor.functionArn,
-          props.videoProcessor.functionArn,
-          props.mediaProcessProcessor.functionArn,
-          props.webhookHandler.functionArn,
-          props.oauthHandler.functionArn,
-        ],
-      }),
-    );
-
-    // SSM write permission for conditional builds — save last build commit (DDR-047)
-    deployProject.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['ssm:PutParameter'],
-        resources: [`arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/last-build-commit`],
-      }),
-    );
 
     // --- Pipeline ---
     const pipeline = new codepipeline.Pipeline(this, 'Pipeline', {

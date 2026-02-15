@@ -460,76 +460,54 @@ export class OperationsDashboardStack extends cdk.Stack {
       }),
     );
 
-    // --- Row 10: DynamoDB ---
-    const dynamoMetric = (name: string, stat: string) =>
-      new cloudwatch.Metric({
-        namespace: 'AWS/DynamoDB',
-        metricName: name,
-        dimensionsMap: { TableName: props.sessionsTable.tableName },
-        statistic: stat,
-        period,
-      });
-
-    dashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'DynamoDB Consumed Capacity',
-        left: [dynamoMetric('ConsumedReadCapacityUnits', 'Sum')],
-        right: [dynamoMetric('ConsumedWriteCapacityUnits', 'Sum')],
-        width: 8,
-        height: 6,
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'DynamoDB Latency',
-        left: [dynamoMetric('SuccessfulRequestLatency', 'Average')],
-        width: 8,
-        height: 6,
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'DynamoDB Errors',
-        left: [
-          dynamoMetric('ThrottledRequests', 'Sum'),
-          dynamoMetric('UserErrors', 'Sum'),
-          dynamoMetric('SystemErrors', 'Sum'),
-        ],
-        width: 8,
-        height: 6,
-      }),
-    );
-
-    // --- Row 10b: File Processing Table (DDR-061) ---
-    const fpDynamoMetric = (name: string, stat: string) =>
-      new cloudwatch.Metric({
-        namespace: 'AWS/DynamoDB',
-        metricName: name,
-        dimensionsMap: { TableName: props.fileProcessingTable.tableName },
-        statistic: stat,
-        period,
-      });
-
-    dashboard.addWidgets(
-      new cloudwatch.GraphWidget({
-        title: 'File Processing Table: Capacity',
-        left: [fpDynamoMetric('ConsumedReadCapacityUnits', 'Sum')],
-        right: [fpDynamoMetric('ConsumedWriteCapacityUnits', 'Sum')],
-        width: 8,
-        height: 6,
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'File Processing Table: Latency',
-        left: [fpDynamoMetric('SuccessfulRequestLatency', 'Average')],
-        width: 8,
-        height: 6,
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'File Processing Table: Errors',
-        left: [
-          fpDynamoMetric('ThrottledRequests', 'Sum'),
-          fpDynamoMetric('UserErrors', 'Sum'),
-        ],
-        width: 8,
-        height: 6,
-      }),
-    );
+    // --- Row 10-10b: DynamoDB (sessions + file processing table) ---
+    const dynamoTables = [
+      {
+        table: props.sessionsTable,
+        capacityTitle: 'DynamoDB Consumed Capacity',
+        latencyTitle: 'DynamoDB Latency',
+        errorsTitle: 'DynamoDB Errors',
+        errorMetrics: ['ThrottledRequests', 'UserErrors', 'SystemErrors'] as const,
+      },
+      {
+        table: props.fileProcessingTable,
+        capacityTitle: 'File Processing Table: Capacity',
+        latencyTitle: 'File Processing Table: Latency',
+        errorsTitle: 'File Processing Table: Errors',
+        errorMetrics: ['ThrottledRequests', 'UserErrors'] as const,
+      },
+    ];
+    for (const { table, capacityTitle, latencyTitle, errorsTitle, errorMetrics } of dynamoTables) {
+      const dynamoMetric = (name: string, stat: string) =>
+        new cloudwatch.Metric({
+          namespace: 'AWS/DynamoDB',
+          metricName: name,
+          dimensionsMap: { TableName: table.tableName },
+          statistic: stat,
+          period,
+        });
+      dashboard.addWidgets(
+        new cloudwatch.GraphWidget({
+          title: capacityTitle,
+          left: [dynamoMetric('ConsumedReadCapacityUnits', 'Sum')],
+          right: [dynamoMetric('ConsumedWriteCapacityUnits', 'Sum')],
+          width: 8,
+          height: 6,
+        }),
+        new cloudwatch.GraphWidget({
+          title: latencyTitle,
+          left: [dynamoMetric('SuccessfulRequestLatency', 'Average')],
+          width: 8,
+          height: 6,
+        }),
+        new cloudwatch.GraphWidget({
+          title: errorsTitle,
+          left: errorMetrics.map((m) => dynamoMetric(m, 'Sum')),
+          width: 8,
+          height: 6,
+        }),
+      );
+    }
 
     // --- Row 11: S3 ---
     dashboard.addWidgets(

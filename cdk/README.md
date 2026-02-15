@@ -1,6 +1,8 @@
-# Welcome to your CDK TypeScript project
+# AI Social Media Helper CDK
 
-This is a blank project for CDK development with TypeScript.
+CDK TypeScript app for deploying AI Social Media Helper infrastructure.
+
+**Structure:** `lib/` (stacks), `lib/constructs/` (backend-build-project, backend-deploy-project, lambda-factory, processing-lambdas, etc.), `test/` (per-stack tests + test-helpers).
 
 The `cdk.json` file tells the CDK Toolkit how to execute your app.
 
