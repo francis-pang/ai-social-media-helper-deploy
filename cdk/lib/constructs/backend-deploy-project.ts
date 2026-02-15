@@ -88,7 +88,13 @@ export function createBackendDeployProject(
       phases: {
         build: {
           commands: [
+            // Diagnostic: dump full imageDetail.json so deploy failures are diagnosable
+            'echo "=== imageDetail.json ==="; cat imageDetail.json | python3 -m json.tool; echo "=== end ==="',
             ...exportCommands,
+            // Diagnostic: dump all resolved image URIs
+            ...lambdas.map(({ functionName, imageKey }) =>
+              `echo ">>> ${functionName} -> $${toEnvVar(imageKey)}"`,
+            ),
             ...updateCommands,
             ...waitCommands,
             'export SAVE_COMMIT=$(python3 -c "import json; d=json.load(open(\'imageDetail.json\')); print(d.get(\'commit\', \'\'))" 2>/dev/null || echo "$CODEBUILD_RESOLVED_SOURCE_VERSION")',
