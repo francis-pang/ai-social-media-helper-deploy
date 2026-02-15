@@ -98,6 +98,28 @@ export class FrontendStack extends cdk.Stack {
       minTtl: cdk.Duration.days(1),
     });
 
+    // --- CloudFront Function for SPA routing (DDR-062) ---
+    // Replaces distribution-level errorResponses which masked API 403/404 errors.
+    // Attached to the default behavior (S3 origin) only — /api/* is unaffected.
+    // Rewrites non-file paths (SPA routes like /triage/abc) to /index.html.
+    const spaRoutingFunction = new cloudfront.Function(this, 'SpaRoutingFunction', {
+      functionName: 'AiSocialMediaSpaRouting',
+      code: cloudfront.FunctionCode.fromInline([
+        'function handler(event) {',
+        '  var request = event.request;',
+        '  var uri = request.uri;',
+        '  // Pass through requests for static files (have a file extension)',
+        '  if (uri.includes(\'.\')) {',
+        '    return request;',
+        '  }',
+        '  // SPA route: rewrite to /index.html for client-side routing',
+        '  request.uri = \'/index.html\';',
+        '  return request;',
+        '}',
+      ].join('\n')),
+      comment: 'Rewrite non-file SPA routes to /index.html — replaces distribution-level errorResponses (DDR-062)',
+    });
+
     // --- CloudFront Distribution ---
     // S3 origin with OAC — bucket policy auto-add is a no-op for imported buckets,
     // so we add the policy manually below.
@@ -127,6 +149,10 @@ export class FrontendStack extends cdk.Stack {
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
         responseHeadersPolicy,
         cachePolicy: defaultCachePolicy,
+        functionAssociations: [{
+          function: spaRoutingFunction,
+          eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+        }],
       },
       additionalBehaviors: {
         '/assets/*': {
@@ -144,21 +170,8 @@ export class FrontendStack extends cdk.Stack {
         },
       },
       defaultRootObject: 'index.html',
-      // SPA routing: serve index.html for any path that doesn't match a file
-      errorResponses: [
-        {
-          httpStatus: 403,
-          responseHttpStatus: 200,
-          responsePagePath: '/index.html',
-          ttl: cdk.Duration.seconds(0),
-        },
-        {
-          httpStatus: 404,
-          responseHttpStatus: 200,
-          responsePagePath: '/index.html',
-          ttl: cdk.Duration.seconds(0),
-        },
-      ],
+      // DDR-062: SPA routing is now handled by the CloudFront Function above
+      // instead of distribution-level errorResponses, which masked API 403/404 errors.
     });
 
     // --- OAC Bucket Policy (manual, avoids cross-stack cycle — DDR-045) ---

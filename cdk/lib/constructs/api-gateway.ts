@@ -4,6 +4,7 @@ import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as authorizers from 'aws-cdk-lib/aws-apigatewayv2-authorizers';
 import * as integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import { Construct } from 'constructs';
 
 export interface ApiGatewayProps {
@@ -91,12 +92,34 @@ export class ApiGateway extends Construct {
       },
     });
 
-    // API Gateway throttling (DDR-028 Problem 10)
+    // DDR-062: API Gateway access logging — captures requests rejected by the JWT
+    // authorizer before reaching the Lambda (auth errors, throttling, routing failures).
+    const accessLogGroup = new logs.LogGroup(this, 'ApiAccessLog', {
+      logGroupName: '/aws/apigateway/AiSocialMediaApi',
+      retention: logs.RetentionDays.THIRTY_DAYS,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // API Gateway throttling (DDR-028 Problem 10) + access logging (DDR-062)
     const cfnStage = this.httpApi.defaultStage?.node.defaultChild as cdk.CfnResource;
     if (cfnStage) {
       cfnStage.addPropertyOverride('DefaultRouteSettings', {
         ThrottlingBurstLimit: 100,
         ThrottlingRateLimit: 50,
+      });
+      cfnStage.addPropertyOverride('AccessLogSettings', {
+        DestinationArn: accessLogGroup.logGroupArn,
+        Format: JSON.stringify({
+          requestId: '$context.requestId',
+          ip: '$context.identity.sourceIp',
+          method: '$context.httpMethod',
+          path: '$context.path',
+          status: '$context.status',
+          responseLength: '$context.responseLength',
+          latency: '$context.responseLatency',
+          integrationError: '$context.integrationErrorMessage',
+          authorizerError: '$context.authorizer.error',
+        }),
       });
     }
 

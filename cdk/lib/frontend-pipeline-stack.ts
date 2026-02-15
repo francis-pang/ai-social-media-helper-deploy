@@ -68,6 +68,9 @@ export class FrontendPipelineStack extends cdk.Stack {
         VITE_CLOUD_MODE: { value: '1' },
         VITE_COGNITO_USER_POOL_ID: { value: props.cognitoUserPoolId },
         VITE_COGNITO_CLIENT_ID: { value: props.cognitoClientId },
+        // DDR-062: Inject commit hash into frontend build for version identity.
+        // CODEBUILD_RESOLVED_SOURCE_VERSION is the full 40-char SHA; truncated to 7 chars in build.
+        VITE_COMMIT_HASH: { value: 'dev' }, // Overridden by build command below
       },
       buildSpec: codebuild.BuildSpec.fromObject({
         version: '0.2',
@@ -78,6 +81,8 @@ export class FrontendPipelineStack extends cdk.Stack {
           },
           build: {
             commands: [
+              // DDR-062: Inject 7-char commit hash into frontend build via Vite env var.
+              'export VITE_COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c1-7)',
               'cd $CODEBUILD_SRC_DIR/web/frontend && npm audit --audit-level=high || echo "WARN: npm audit found vulnerabilities (non-blocking)"',
               'cd $CODEBUILD_SRC_DIR/web/frontend && npm run build',
             ],
