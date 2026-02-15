@@ -90,41 +90,45 @@ export function createBackendBuildProject(
         },
         build: {
           commands: [
-            'COMMIT=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c1-7)',
-            'LAST_BUILD=$(aws ssm get-parameter --name /ai-social-media/last-build-commit --query "Parameter.Value" --output text 2>/dev/null || echo "")',
-            'BUILD_ALL=true',
-            'BUILD_API=false; BUILD_TRIAGE=false; BUILD_DESC=false; BUILD_DOWNLOAD=false; BUILD_PUBLISH=false',
-            'BUILD_ENHANCE=false; BUILD_WEBHOOK=false; BUILD_OAUTH=false',
-            'BUILD_THUMB=false; BUILD_SELECT=false; BUILD_VIDEO=false; BUILD_MEDIAPROCESS=false',
+            // IMPORTANT: All variable assignments use `export` because CodeBuild runs
+            // each command entry in a separate shell. Exported env vars persist across entries.
+            'export COMMIT=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c1-7)',
+            'export LAST_BUILD=$(aws ssm get-parameter --name /ai-social-media/last-build-commit --query "Parameter.Value" --output text 2>/dev/null || echo "")',
+            'export BUILD_ALL=true',
+            'export BUILD_API=false; export BUILD_TRIAGE=false; export BUILD_DESC=false; export BUILD_DOWNLOAD=false; export BUILD_PUBLISH=false',
+            'export BUILD_ENHANCE=false; export BUILD_WEBHOOK=false; export BUILD_OAUTH=false',
+            'export BUILD_THUMB=false; export BUILD_SELECT=false; export BUILD_VIDEO=false; export BUILD_MEDIAPROCESS=false',
             'if [ -n "$LAST_BUILD" ] && git rev-parse "$LAST_BUILD" >/dev/null 2>&1; then '
               + 'CHANGED=$(git diff --name-only "$LAST_BUILD" HEAD); '
               + 'echo "=== Changed files since last build ($LAST_BUILD) ==="; echo "$CHANGED"; '
               + 'if echo "$CHANGED" | grep -qE "^(internal/|go\\.mod|go\\.sum|cmd/media-lambda/Dockerfile\\.)"; then '
-                + 'echo "Shared code or Dockerfile changed — rebuilding ALL images"; BUILD_ALL=true; '
+                + 'echo "Shared code or Dockerfile changed — rebuilding ALL images"; export BUILD_ALL=true; '
               + 'else '
-                + 'BUILD_ALL=false; '
-                + 'echo "$CHANGED" | grep -q "^cmd/media-lambda/" && BUILD_API=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/triage-lambda/" && BUILD_TRIAGE=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/description-lambda/" && BUILD_DESC=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/download-lambda/" && BUILD_DOWNLOAD=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/publish-lambda/" && BUILD_PUBLISH=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/enhance-lambda/" && BUILD_ENHANCE=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/webhook-lambda/" && BUILD_WEBHOOK=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/oauth-lambda/" && BUILD_OAUTH=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/thumbnail-lambda/" && BUILD_THUMB=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/selection-lambda/" && BUILD_SELECT=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/video-lambda/" && BUILD_VIDEO=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/media-process-lambda/" && BUILD_MEDIAPROCESS=true; '
+                + 'export BUILD_ALL=false; '
+                + 'echo "$CHANGED" | grep -q "^cmd/media-lambda/" && export BUILD_API=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/triage-lambda/" && export BUILD_TRIAGE=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/description-lambda/" && export BUILD_DESC=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/download-lambda/" && export BUILD_DOWNLOAD=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/publish-lambda/" && export BUILD_PUBLISH=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/enhance-lambda/" && export BUILD_ENHANCE=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/webhook-lambda/" && export BUILD_WEBHOOK=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/oauth-lambda/" && export BUILD_OAUTH=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/thumbnail-lambda/" && export BUILD_THUMB=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/selection-lambda/" && export BUILD_SELECT=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/video-lambda/" && export BUILD_VIDEO=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/media-process-lambda/" && export BUILD_MEDIAPROCESS=true; '
                 + 'echo "Selective build: API=$BUILD_API TRIAGE=$BUILD_TRIAGE DESC=$BUILD_DESC DOWNLOAD=$BUILD_DOWNLOAD PUBLISH=$BUILD_PUBLISH ENHANCE=$BUILD_ENHANCE WEBHOOK=$BUILD_WEBHOOK OAUTH=$BUILD_OAUTH THUMB=$BUILD_THUMB SELECT=$BUILD_SELECT VIDEO=$BUILD_VIDEO MEDIAPROCESS=$BUILD_MEDIAPROCESS"; '
               + 'fi; '
             + 'else echo "No previous build commit found — rebuilding ALL images"; fi',
             // DDR-062: Pass COMMIT_HASH build arg to all images for version identity.
-            'build_image() { set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"; echo "Building $cmd..."; docker build --provenance=false --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"; }',
             // Wave 1: Light images (api, triage, desc, download, publish)
-            // IMPORTANT: Use '; ' separator (not newlines) — CodeBuild splits multi-line
-            // strings by newlines and runs each line in a separate shell, which breaks `wait`.
-            // Using '; ' keeps everything in one shell so `wait` blocks until builds complete.
+            // IMPORTANT: Use '; ' separator (not newlines) — CodeBuild runs each line of a
+            // multi-line command entry in a separate shell. Using '; ' keeps everything in one
+            // shell so background jobs, `wait`, and function definitions are shared.
+            // The build_image() function must be defined INSIDE a joined command entry since
+            // shell functions cannot be exported across CodeBuild command boundaries.
             [
+              'build_image() { set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"; echo "Building $cmd..."; docker build --provenance=false --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"; }',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_API" = "true" ]) && (build_image media-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:api-$COMMIT -t $PRIVATE_LIGHT_URI:api-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-api) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_TRIAGE" = "true" ]) && (build_image triage-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:triage-$COMMIT -t $PRIVATE_LIGHT_URI:triage-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-triage) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DESC" = "true" ]) && (build_image description-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:desc-$COMMIT -t $PRIVATE_LIGHT_URI:desc-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-desc) &',
@@ -134,6 +138,7 @@ export function createBackendBuildProject(
             ].join('; '),
             // Wave 2: Light images (enhance, webhook, oauth)
             [
+              'build_image() { set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"; echo "Building $cmd..."; docker build --provenance=false --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"; }',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_ENHANCE" = "true" ]) && (build_image enhance-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest -t $PUBLIC_LIGHT_URI:enhance-$COMMIT -t $PUBLIC_LIGHT_URI:enhance-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-enhance) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_WEBHOOK" = "true" ]) && (build_image webhook-lambda Dockerfile.light "-t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest" "$PRIVATE_WEBHOOK_URI:webhook-latest" && touch /tmp/built-webhook) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_OAUTH" = "true" ]) && (build_image oauth-lambda Dockerfile.light "-t $PRIVATE_OAUTH_URI:oauth-$COMMIT -t $PRIVATE_OAUTH_URI:oauth-latest" "$PRIVATE_OAUTH_URI:oauth-latest" && touch /tmp/built-oauth) &',
@@ -141,6 +146,7 @@ export function createBackendBuildProject(
             ].join('; '),
             // Wave 3: Heavy images (thumb, select, video, mediaprocess)
             [
+              'build_image() { set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"; echo "Building $cmd..."; docker build --provenance=false --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"; }',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_THUMB" = "true" ]) && (build_image thumbnail-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest -t $PUBLIC_HEAVY_URI:thumb-$COMMIT -t $PUBLIC_HEAVY_URI:thumb-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-thumb) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_SELECT" = "true" ]) && (build_image selection-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-select) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_VIDEO" = "true" ]) && (build_image video-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-video) &',
@@ -187,18 +193,18 @@ export function createBackendBuildProject(
               '[ -f /tmp/built-video ] && docker push $PUBLIC_HEAVY_URI:video-latest &',
               'wait',
             ].join('; '),
-            'API_TAG=$([ -f /tmp/built-api ] && echo "api-$COMMIT" || echo "api-latest")',
-            'TRIAGE_TAG=$([ -f /tmp/built-triage ] && echo "triage-$COMMIT" || echo "triage-latest")',
-            'DESC_TAG=$([ -f /tmp/built-desc ] && echo "desc-$COMMIT" || echo "desc-latest")',
-            'DOWNLOAD_TAG=$([ -f /tmp/built-download ] && echo "download-$COMMIT" || echo "download-latest")',
-            'PUBLISH_TAG=$([ -f /tmp/built-publish ] && echo "publish-$COMMIT" || echo "publish-latest")',
-            'ENHANCE_TAG=$([ -f /tmp/built-enhance ] && echo "enhance-$COMMIT" || echo "enhance-latest")',
-            'THUMB_TAG=$([ -f /tmp/built-thumb ] && echo "thumb-$COMMIT" || echo "thumb-latest")',
-            'SELECT_TAG=$([ -f /tmp/built-select ] && echo "select-$COMMIT" || echo "select-latest")',
-            'VIDEO_TAG=$([ -f /tmp/built-video ] && echo "video-$COMMIT" || echo "video-latest")',
-            'MEDIAPROCESS_TAG=$([ -f /tmp/built-mediaprocess ] && echo "mediaprocess-$COMMIT" || echo "mediaprocess-latest")',
-            'WEBHOOK_TAG=$([ -f /tmp/built-webhook ] && echo "webhook-$COMMIT" || echo "webhook-latest")',
-            'OAUTH_TAG=$([ -f /tmp/built-oauth ] && echo "oauth-$COMMIT" || echo "oauth-latest")',
+            'export API_TAG=$([ -f /tmp/built-api ] && echo "api-$COMMIT" || echo "api-latest")',
+            'export TRIAGE_TAG=$([ -f /tmp/built-triage ] && echo "triage-$COMMIT" || echo "triage-latest")',
+            'export DESC_TAG=$([ -f /tmp/built-desc ] && echo "desc-$COMMIT" || echo "desc-latest")',
+            'export DOWNLOAD_TAG=$([ -f /tmp/built-download ] && echo "download-$COMMIT" || echo "download-latest")',
+            'export PUBLISH_TAG=$([ -f /tmp/built-publish ] && echo "publish-$COMMIT" || echo "publish-latest")',
+            'export ENHANCE_TAG=$([ -f /tmp/built-enhance ] && echo "enhance-$COMMIT" || echo "enhance-latest")',
+            'export THUMB_TAG=$([ -f /tmp/built-thumb ] && echo "thumb-$COMMIT" || echo "thumb-latest")',
+            'export SELECT_TAG=$([ -f /tmp/built-select ] && echo "select-$COMMIT" || echo "select-latest")',
+            'export VIDEO_TAG=$([ -f /tmp/built-video ] && echo "video-$COMMIT" || echo "video-latest")',
+            'export MEDIAPROCESS_TAG=$([ -f /tmp/built-mediaprocess ] && echo "mediaprocess-$COMMIT" || echo "mediaprocess-latest")',
+            'export WEBHOOK_TAG=$([ -f /tmp/built-webhook ] && echo "webhook-$COMMIT" || echo "webhook-latest")',
+            'export OAUTH_TAG=$([ -f /tmp/built-oauth ] && echo "oauth-$COMMIT" || echo "oauth-latest")',
             `echo '{"apiImage":"'$PRIVATE_LIGHT_URI:$API_TAG'","triageImage":"'$PRIVATE_LIGHT_URI:$TRIAGE_TAG'","descImage":"'$PRIVATE_LIGHT_URI:$DESC_TAG'","downloadImage":"'$PRIVATE_LIGHT_URI:$DOWNLOAD_TAG'","publishImage":"'$PRIVATE_LIGHT_URI:$PUBLISH_TAG'","enhanceImage":"'$PRIVATE_LIGHT_URI:$ENHANCE_TAG'","thumbImage":"'$PRIVATE_HEAVY_URI:$THUMB_TAG'","selectImage":"'$PRIVATE_HEAVY_URI:$SELECT_TAG'","videoImage":"'$PRIVATE_HEAVY_URI:$VIDEO_TAG'","mediaprocessImage":"'$PRIVATE_HEAVY_URI:$MEDIAPROCESS_TAG'","webhookImage":"'$PRIVATE_WEBHOOK_URI:$WEBHOOK_TAG'","oauthImage":"'$PRIVATE_OAUTH_URI:$OAUTH_TAG'","commit":"'$COMMIT'"}' > imageDetail.json`,
           ],
         },
