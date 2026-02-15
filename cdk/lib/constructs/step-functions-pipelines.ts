@@ -143,28 +143,28 @@ export class StepFunctionsPipelines extends Construct {
     });
 
     // =====================================================================
-    // Triage Pipeline (DDR-052)
+    // Triage Pipeline (DDR-061: S3 event-driven per-file processing)
     // =====================================================================
-    // PrepareMedia -> [has videos?] -> poll Gemini Files API -> RunTriage
-    // Wait states eliminate idle Lambda compute during Gemini file processing.
-    const triagePrepare = new tasks.LambdaInvoke(this, 'TriagePrepare', {
+    // InitSession -> Poll(processedCount == expectedFileCount) -> TriageRun
+    // MediaProcess Lambda handles per-file processing via S3 events.
+    // The SFN polls DynamoDB every 3 seconds until all files are processed.
+    const triageInitSession = new tasks.LambdaInvoke(this, 'TriageInitSession', {
       lambdaFunction: props.triageProcessor,
       outputPath: '$.Payload',
       retryOnServiceExceptions: true,
     });
-    triagePrepare.addRetry({
+    triageInitSession.addRetry({
       errors: ['States.ALL'],
       maxAttempts: 1,
     });
 
-    const triageCheckGemini = new tasks.LambdaInvoke(this, 'TriageCheckGemini', {
+    const triageCheckProcessing = new tasks.LambdaInvoke(this, 'TriageCheckProcessing', {
       lambdaFunction: props.triageProcessor,
       payload: sfn.TaskInput.fromObject({
-        'type': 'triage-check-gemini',
+        'type': 'triage-check-processing',
         'sessionId.$': '$.sessionId',
         'jobId.$': '$.jobId',
         'model.$': '$.model',
-        'videoFileNames.$': '$.videoFileNames',
       }),
       outputPath: '$.Payload',
       retryOnServiceExceptions: true,
@@ -186,24 +186,21 @@ export class StepFunctionsPipelines extends Construct {
       maxAttempts: 1,
     });
 
-    const triageGeminiWait = new sfn.Wait(this, 'TriageGeminiWait', {
-      time: sfn.WaitTime.duration(cdk.Duration.seconds(5)),
+    const triageProcessingWait = new sfn.Wait(this, 'TriageProcessingWait', {
+      time: sfn.WaitTime.duration(cdk.Duration.seconds(3)),
     });
 
-    // Choice: are all Gemini files active?
-    const triageAllActive = new sfn.Choice(this, 'TriageAllActive')
-      .when(sfn.Condition.booleanEquals('$.allActive', true), triageRunTriage)
-      .otherwise(triageGeminiWait.next(triageCheckGemini));
-
-    // Choice: does the session have videos?
-    const triageHasVideos = new sfn.Choice(this, 'TriageHasVideos')
-      .when(sfn.Condition.booleanEquals('$.hasVideos', true), triageCheckGemini.next(triageAllActive))
-      .otherwise(triageRunTriage);
+    // Choice: are all files processed?
+    const triageAllProcessed = new sfn.Choice(this, 'TriageAllProcessed')
+      .when(sfn.Condition.booleanEquals('$.allProcessed', true), triageRunTriage)
+      .otherwise(triageProcessingWait.next(triageCheckProcessing));
 
     this.triagePipeline = new sfn.StateMachine(this, 'TriagePipeline', {
       stateMachineName: 'AiSocialMediaTriagePipeline',
-      comment: 'Upload media to Gemini Files API, poll until active, then run AI content triage',
-      definitionBody: sfn.DefinitionBody.fromChainable(triagePrepare.next(triageHasVideos)),
+      comment: 'S3 event-driven triage: init session, poll for per-file processing completion, then run AI triage (DDR-061)',
+      definitionBody: sfn.DefinitionBody.fromChainable(
+        triageInitSession.next(triageCheckProcessing).next(triageAllProcessed),
+      ),
       timeout: cdk.Duration.minutes(30),
     });
 

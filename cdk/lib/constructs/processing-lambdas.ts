@@ -12,6 +12,8 @@ export interface ProcessingLambdasProps {
   mediaBucket: s3.IBucket;
   /** DynamoDB table for session state */
   sessionsTable: dynamodb.ITable;
+  /** DynamoDB table for per-file processing results (DDR-061) */
+  fileProcessingTable: dynamodb.ITable;
   /** ECR Private light repository (from RegistryStack) */
   lightEcrRepo: ecr.IRepository;
   /** ECR Private heavy repository (from RegistryStack) */
@@ -109,7 +111,7 @@ export class ProcessingLambdas extends Construct {
       code: imageCode(props.lightEcrRepo, 'triage-latest', 'triage-lambda'),
       timeout: cdk.Duration.minutes(10),
       memorySize: 2048,
-      ephemeralStorageSize: cdk.Size.mebibytes(2048),
+      ephemeralStorageSize: cdk.Size.mebibytes(6144),
       environment: sharedEnv,
     });
 
@@ -169,7 +171,7 @@ export class ProcessingLambdas extends Construct {
       code: imageCode(props.heavyEcrRepo, 'select-latest', 'selection-lambda'),
       timeout: cdk.Duration.minutes(15),
       memorySize: 4096,
-      ephemeralStorageSize: cdk.Size.mebibytes(4096),
+      ephemeralStorageSize: cdk.Size.mebibytes(6144),
       environment: sharedEnv,
     });
 
@@ -214,6 +216,11 @@ export class ProcessingLambdas extends Construct {
       props.mediaBucket.grantDelete(fn);
       props.sessionsTable.grantReadWriteData(fn);
     }
+
+    // Triage Lambda: file processing table read (DDR-061 — reads file manifest for triage-run)
+    props.fileProcessingTable.grantReadData(this.triageProcessor);
+    // API Lambda: file processing table read (DDR-061 — reads per-file statuses for results endpoint)
+    props.fileProcessingTable.grantReadData(this.apiHandler);
 
     // AI Lambdas: SSM read for Gemini API key (DDR-053: not needed by download/publish)
     const stack = cdk.Stack.of(scope);

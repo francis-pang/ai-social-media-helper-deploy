@@ -28,15 +28,26 @@ const env: cdk.Environment = {
 const enableMetricArchive = app.node.tryGetContext('enableMetricArchive') !== 'false';
 
 // =========================================================================
-// 1. Storage (STATEFUL — DDR-045: all S3 buckets + DynamoDB in one stack)
+// 1. Registry (DDR-046: all ECR repos in one stack, no Lambdas)
+// =========================================================================
+// Deploys before any application stack. Contains only ECR repositories,
+// breaking the chicken-and-egg dependency where DockerImageFunction requires
+// an image that the pipeline (which depends on the app stack) hasn't pushed yet.
+const registry = new RegistryStack(app, 'AiSocialMediaRegistry', { env });
+
+// =========================================================================
+// 2. Storage (STATEFUL — DDR-045: all S3 buckets + DynamoDB in one stack)
 // =========================================================================
 // This stack is termination-protected and rarely changes. All stateful
 // resources live here so stateless stacks can be freely destroyed/redeployed
 // without orphaning S3 buckets.
+// MediaProcess Lambda lives here to avoid cyclic dependency with S3 event notification (DDR-061).
 const storage = new StorageStack(app, 'AiSocialMediaStorage', {
   env,
   enableMetricArchive,
+  heavyEcrRepo: registry.heavyEcrRepo,
 });
+storage.addDependency(registry);
 
 // CodeStar connection ARN — env, then SSM lookup (DDR-028). Never use placeholder.
 const codeStarConnectionArn = process.env.CODESTAR_CONNECTION_ARN
@@ -47,14 +58,6 @@ if (codeStarConnectionArn === PLACEHOLDER_ARN || codeStarConnectionArn.includes(
 }
 
 // =========================================================================
-// 2. Registry (DDR-046: all ECR repos in one stack, no Lambdas)
-// =========================================================================
-// Deploys before any application stack. Contains only ECR repositories,
-// breaking the chicken-and-egg dependency where DockerImageFunction requires
-// an image that the pipeline (which depends on the app stack) hasn't pushed yet.
-const registry = new RegistryStack(app, 'AiSocialMediaRegistry', { env });
-
-// =========================================================================
 // 3. Backend (STATELESS): 11 Lambdas + API Gateway + Cognito + 4 Step Functions (DDR-035, DDR-053)
 // =========================================================================
 // ECR repos come from RegistryStack (DDR-046)
@@ -62,6 +65,8 @@ const backend = new BackendStack(app, 'AiSocialMediaBackend', {
   env,
   mediaBucket: storage.mediaBucket,
   sessionsTable: storage.sessionsTable,
+  fileProcessingTable: storage.fileProcessingTable,
+  mediaProcessProcessor: storage.mediaProcessProcessor,
   lightEcrRepo: registry.lightEcrRepo,
   heavyEcrRepo: registry.heavyEcrRepo,
   publicLightEcrRepo: registry.publicLightEcrRepo,
@@ -126,6 +131,7 @@ const backendPipeline = new BackendPipelineStack(app, 'AiSocialMediaBackendPipel
   selectionProcessor: backend.selectionProcessor,
   enhancementProcessor: backend.enhancementProcessor,
   videoProcessor: backend.videoProcessor,
+  mediaProcessProcessor: backend.mediaProcessProcessor,
   webhookEcrRepo: registry.webhookEcrRepo,
   webhookHandler: webhook.webhookHandler,
   oauthEcrRepo: registry.oauthEcrRepo,
@@ -149,6 +155,7 @@ const lambdaEntries = [
   { id: 'SelectionProcessor', fn: backend.selectionProcessor },
   { id: 'EnhancementProcessor', fn: backend.enhancementProcessor },
   { id: 'VideoProcessor', fn: backend.videoProcessor },
+  { id: 'MediaProcessProcessor', fn: backend.mediaProcessProcessor },
 ];
 
 const opsAlert = new OperationsAlertStack(app, 'AiSocialMediaOperationsAlert', {
@@ -157,6 +164,8 @@ const opsAlert = new OperationsAlertStack(app, 'AiSocialMediaOperationsAlert', {
   httpApi: backend.httpApi,
   selectionPipeline: backend.selectionPipeline,
   enhancementPipeline: backend.enhancementPipeline,
+  triagePipeline: backend.triagePipeline,
+  publishPipeline: backend.publishPipeline,
   alertEmail: app.node.tryGetContext('alertEmail'),
 });
 opsAlert.addDependency(backend);
@@ -182,7 +191,10 @@ const opsDashboard = new OperationsDashboardStack(app, 'AiSocialMediaOperationsD
   httpApi: backend.httpApi,
   selectionPipeline: backend.selectionPipeline,
   enhancementPipeline: backend.enhancementPipeline,
+  triagePipeline: backend.triagePipeline,
+  publishPipeline: backend.publishPipeline,
   sessionsTable: storage.sessionsTable,
+  fileProcessingTable: storage.fileProcessingTable,
   mediaBucket: storage.mediaBucket,
   alarms: opsAlert.alarms,
 });

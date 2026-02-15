@@ -19,6 +19,10 @@ export interface BackendStackProps extends cdk.StackProps {
   mediaBucket: s3.IBucket;
   /** The DynamoDB table for session state (from StorageStack) */
   sessionsTable: dynamodb.ITable;
+  /** DynamoDB table for per-file processing results (DDR-061) */
+  fileProcessingTable: dynamodb.ITable;
+  /** MediaProcess Lambda (from StorageStack — DDR-061, lives there for S3 event notification) */
+  mediaProcessProcessor: lambda.IFunction;
   /** CloudFront distribution domain for CORS lockdown (DDR-028) */
   cloudFrontDomain?: string;
   /** ECR Private light repository — API + domain Lambdas (from RegistryStack, DDR-046) */
@@ -62,6 +66,7 @@ export class BackendStack extends cdk.Stack {
   public readonly selectionProcessor: lambda.Function;
   public readonly enhancementProcessor: lambda.Function;
   public readonly videoProcessor: lambda.Function;
+  public readonly mediaProcessProcessor: lambda.IFunction;
 
   // ECR repositories (from RegistryStack — DDR-046)
   public readonly lightEcrRepo: ecr.IRepository;
@@ -92,10 +97,12 @@ export class BackendStack extends cdk.Stack {
     const lambdas = new ProcessingLambdas(this, 'Lambdas', {
       mediaBucket: props.mediaBucket,
       sessionsTable: props.sessionsTable,
+      fileProcessingTable: props.fileProcessingTable,
       lightEcrRepo: props.lightEcrRepo,
       heavyEcrRepo: props.heavyEcrRepo,
       originVerifySecret,
     });
+    // MediaProcess Lambda lives in StorageStack (for S3 event notification); re-export for pipeline
 
     // Re-export Lambda references for cross-stack access
     this.apiHandler = lambdas.apiHandler;
@@ -107,6 +114,7 @@ export class BackendStack extends cdk.Stack {
     this.selectionProcessor = lambdas.selectionProcessor;
     this.enhancementProcessor = lambdas.enhancementProcessor;
     this.videoProcessor = lambdas.videoProcessor;
+    this.mediaProcessProcessor = props.mediaProcessProcessor;
 
     // =====================================================================
     // 2. Step Functions Pipelines (4 state machines)
@@ -172,6 +180,15 @@ export class BackendStack extends cdk.Stack {
       pipelines.publishPipeline.stateMachineArn,
     );
 
+    this.apiHandler.addEnvironment(
+      'FILE_PROCESSING_TABLE_NAME',
+      props.fileProcessingTable.tableName,
+    );
+    lambdas.triageProcessor.addEnvironment(
+      'FILE_PROCESSING_TABLE_NAME',
+      props.fileProcessingTable.tableName,
+    );
+
     // Inject domain-specific Lambda ARNs for async dispatch (DDR-053)
     this.apiHandler.addEnvironment(
       'DESCRIPTION_LAMBDA_ARN',
@@ -219,6 +236,11 @@ export class BackendStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'TriageLambdaName', {
       value: lambdas.triageProcessor.functionName,
       description: 'Triage Lambda function name (DDR-053)',
+    });
+
+    new cdk.CfnOutput(this, 'MediaProcessLambdaName', {
+      value: props.mediaProcessProcessor.functionName,
+      description: 'MediaProcess Lambda function name (DDR-061)',
     });
 
     new cdk.CfnOutput(this, 'DescriptionLambdaName', {

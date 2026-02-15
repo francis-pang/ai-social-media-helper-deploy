@@ -1,6 +1,10 @@
+import * as path from 'path';
 import * as cdk from 'aws-cdk-lib/core';
 import * as s3 from 'aws-cdk-lib/aws-s3';
+import * as s3n from 'aws-cdk-lib/aws-s3-notifications';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as lambda from 'aws-cdk-lib/aws-lambda';
+import * as ecr from 'aws-cdk-lib/aws-ecr';
 import { Construct } from 'constructs';
 
 export interface StorageStackProps extends cdk.StackProps {
@@ -8,6 +12,8 @@ export interface StorageStackProps extends cdk.StackProps {
   cloudFrontDomain?: string;
   /** Enable long-term metric archival bucket (optional, pass via -c enableMetricArchive=true) */
   enableMetricArchive?: boolean;
+  /** ECR heavy repository for MediaProcess Lambda image (DDR-061) */
+  heavyEcrRepo: ecr.IRepository;
 }
 
 /**
@@ -29,6 +35,8 @@ export interface StorageStackProps extends cdk.StackProps {
 export class StorageStack extends cdk.Stack {
   public readonly mediaBucket: s3.Bucket;
   public readonly sessionsTable: dynamodb.Table;
+  public readonly fileProcessingTable: dynamodb.Table;
+  public readonly mediaProcessProcessor: lambda.DockerImageFunction;
   public readonly frontendBucket: s3.Bucket;
   public readonly logArchiveBucket: s3.Bucket;
   public readonly metricsArchiveBucket?: s3.Bucket;
@@ -89,6 +97,62 @@ export class StorageStack extends cdk.Stack {
       timeToLiveAttribute: 'expiresAt',
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
+
+    // =========================================================================
+    // 2b. File Processing Table (DDR-061: per-file triage processing results)
+    // =========================================================================
+    // Dedicated table for ephemeral per-file processing results during triage.
+    // Separate from sessions table for: data isolation, zero write contention
+    // between concurrent MediaProcess Lambda invocations, independent scaling,
+    // and shorter TTL (4 hours vs 24 hours for sessions).
+    this.fileProcessingTable = new dynamodb.Table(this, 'FileProcessingTable', {
+      tableName: 'media-file-processing',
+      partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING }, // {sessionId}#{jobId}
+      sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },       // {filename}
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'expiresAt',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // =========================================================================
+    // 2c. MediaProcess Lambda (DDR-061: S3 event-driven per-file processing)
+    // =========================================================================
+    // Lives in StorageStack to avoid cyclic dependency: S3 event notification
+    // requires bucket and Lambda in same stack (bucket -> Lambda creates Storage -> Backend cycle).
+    const useLocalImages = this.node.tryGetContext('localImages') === 'true';
+    const lambdaCodeRoot = path.resolve(__dirname, '..', '..', '..', '..', 'ai-social-media-helper');
+    const imageCode = (
+      repo: ecr.IRepository,
+      tag: string,
+      localDir: string,
+    ): lambda.DockerImageCode =>
+      useLocalImages
+        ? lambda.DockerImageCode.fromImageAsset(path.join(lambdaCodeRoot, localDir))
+        : lambda.DockerImageCode.fromEcr(repo, { tagOrDigest: tag });
+
+    this.mediaProcessProcessor = new lambda.DockerImageFunction(this, 'MediaProcessProcessor', {
+      description: 'Per-file media processing — validates, converts, generates thumbnails, triggered by S3 events (DDR-061)',
+      code: imageCode(props!.heavyEcrRepo, 'mediaprocess-latest', 'media-process-lambda'),
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 1024,
+      ephemeralStorageSize: cdk.Size.mebibytes(4096),
+      environment: {
+        MEDIA_BUCKET_NAME: this.mediaBucket.bucketName,
+        DYNAMO_TABLE_NAME: this.sessionsTable.tableName,
+        FILE_PROCESSING_TABLE_NAME: this.fileProcessingTable.tableName,
+      },
+    });
+    this.mediaBucket.grantReadWrite(this.mediaProcessProcessor);
+    this.mediaBucket.grantDelete(this.mediaProcessProcessor);
+    this.sessionsTable.grantReadWriteData(this.mediaProcessProcessor);
+    this.fileProcessingTable.grantReadWriteData(this.mediaProcessProcessor);
+
+    // S3 event notification: trigger MediaProcess Lambda on ObjectCreated (DDR-061)
+    // MediaProcess Lambda filters keys internally (skips /thumbnails/, /processed/, /compressed/)
+    this.mediaBucket.addEventNotification(
+      s3.EventType.OBJECT_CREATED,
+      new s3n.LambdaDestination(this.mediaProcessProcessor),
+    );
 
     // =========================================================================
     // 3. Frontend Assets Bucket (private, OAC-only access — DDR-045: moved from FrontendStack)
@@ -220,6 +284,16 @@ export class StorageStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'SessionsTableArn', {
       value: this.sessionsTable.tableArn,
       description: 'DynamoDB sessions table ARN',
+    });
+
+    new cdk.CfnOutput(this, 'FileProcessingTableName', {
+      value: this.fileProcessingTable.tableName,
+      description: 'DynamoDB file processing table name (DDR-061)',
+    });
+
+    new cdk.CfnOutput(this, 'FileProcessingTableArn', {
+      value: this.fileProcessingTable.tableArn,
+      description: 'DynamoDB file processing table ARN (DDR-061)',
     });
 
     new cdk.CfnOutput(this, 'FrontendBucketName', {

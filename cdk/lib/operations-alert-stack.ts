@@ -13,7 +13,7 @@ export interface NamedLambda {
   /** Human-readable name for construct IDs (e.g. 'ApiHandler', 'VideoProcessor') */
   id: string;
   /** The Lambda function */
-  fn: lambda.Function;
+  fn: lambda.IFunction;
 }
 
 export interface OperationsAlertStackProps extends cdk.StackProps {
@@ -24,6 +24,8 @@ export interface OperationsAlertStackProps extends cdk.StackProps {
   /** Step Functions state machines */
   selectionPipeline: sfn.StateMachine;
   enhancementPipeline: sfn.StateMachine;
+  triagePipeline: sfn.StateMachine;
+  publishPipeline: sfn.StateMachine;
   /** Email for alarm notifications (optional, pass via -c alertEmail=...) */
   alertEmail?: string;
 }
@@ -105,7 +107,7 @@ export class OperationsAlertStack extends cdk.Stack {
     }
 
     // --- Lambda Duration Alarms (heavy Lambdas: selection=15min, enhancement=5min, video=15min) ---
-    const durationAlarms: Array<{ fn: lambda.Function; maxMs: number; name: string }> = [
+    const durationAlarms: Array<{ fn: lambda.IFunction; maxMs: number; name: string }> = [
       { fn: lambdas[2].fn, maxMs: 12 * 60 * 1000, name: 'Selection' },   // 80% of 15min
       { fn: lambdas[3].fn, maxMs: 4 * 60 * 1000, name: 'Enhancement' },  // 80% of 5min
       { fn: lambdas[4].fn, maxMs: 12 * 60 * 1000, name: 'Video' },        // 80% of 15min
@@ -166,6 +168,8 @@ export class OperationsAlertStack extends cdk.Stack {
     const pipelines = [
       { sm: props.selectionPipeline, name: 'SelectionPipeline' },
       { sm: props.enhancementPipeline, name: 'EnhancementPipeline' },
+      { sm: props.triagePipeline, name: 'TriagePipeline' },
+      { sm: props.publishPipeline, name: 'PublishPipeline' },
     ];
 
     for (const { sm, name } of pipelines) {

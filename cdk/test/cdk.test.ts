@@ -12,14 +12,20 @@ describe('AiSocialMedia Infrastructure', () => {
   const app = new cdk.App();
   const env = { account: '123456789012', region: 'us-east-1' };
 
-  // DDR-045: StorageStack is the stateful stack — all S3 buckets + DynamoDB here
-  const storage = new StorageStack(app, 'TestStorage', { env });
   // DDR-046: RegistryStack owns all ECR repos — no Lambdas, deploys first
   const registry = new RegistryStack(app, 'TestRegistry', { env });
+  // DDR-045: StorageStack is the stateful stack — all S3 buckets + DynamoDB here
+  // DDR-061: StorageStack also creates MediaProcess Lambda (for S3 event notification)
+  const storage = new StorageStack(app, 'TestStorage', {
+    env,
+    heavyEcrRepo: registry.heavyEcrRepo,
+  });
   const backend = new BackendStack(app, 'TestBackend', {
     env,
     mediaBucket: storage.mediaBucket,
     sessionsTable: storage.sessionsTable,
+    fileProcessingTable: storage.fileProcessingTable,
+    mediaProcessProcessor: storage.mediaProcessProcessor,
     lightEcrRepo: registry.lightEcrRepo,
     heavyEcrRepo: registry.heavyEcrRepo,
     publicLightEcrRepo: registry.publicLightEcrRepo,
@@ -58,6 +64,7 @@ describe('AiSocialMedia Infrastructure', () => {
     selectionProcessor: backend.selectionProcessor,
     enhancementProcessor: backend.enhancementProcessor,
     videoProcessor: backend.videoProcessor,
+    mediaProcessProcessor: backend.mediaProcessProcessor,
     webhookEcrRepo: registry.webhookEcrRepo,
     webhookHandler: webhook.webhookHandler,
     oauthEcrRepo: registry.oauthEcrRepo,
@@ -76,6 +83,31 @@ describe('AiSocialMedia Infrastructure', () => {
       BucketName: 'ai-social-media-uploads-123456789012',
       LifecycleConfiguration: {
         Rules: [{ ExpirationInDays: 1, Id: 'expire-uploads-24h', Status: 'Enabled' }],
+      },
+    });
+  });
+
+  test('StorageStack creates MediaProcess Lambda and S3 event notification (DDR-061)', () => {
+    const template = Template.fromStack(storage);
+    template.hasResourceProperties('AWS::Lambda::Function', {
+      MemorySize: 1024,
+      Timeout: 300,
+    });
+    template.resourceCountIs('AWS::Lambda::Permission', 1); // S3 can invoke MediaProcess
+  });
+
+  test('StorageStack creates DynamoDB file processing table (DDR-061)', () => {
+    const template = Template.fromStack(storage);
+    template.hasResourceProperties('AWS::DynamoDB::Table', {
+      TableName: 'media-file-processing',
+      KeySchema: [
+        { AttributeName: 'PK', KeyType: 'HASH' },
+        { AttributeName: 'SK', KeyType: 'RANGE' },
+      ],
+      BillingMode: 'PAY_PER_REQUEST',
+      TimeToLiveSpecification: {
+        AttributeName: 'expiresAt',
+        Enabled: true,
       },
     });
   });
@@ -227,6 +259,7 @@ describe('AiSocialMedia Infrastructure', () => {
     });
 
     // Total: 9 Lambda functions (api, triage, description, download, publish, thumbnail, selection, enhancement, video)
+    // MediaProcess Lambda lives in StorageStack (DDR-061)
     template.resourceCountIs('AWS::Lambda::Function', 9);
   });
 

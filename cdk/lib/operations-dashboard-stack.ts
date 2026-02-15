@@ -16,8 +16,12 @@ export interface OperationsDashboardStackProps extends cdk.StackProps {
   /** Step Functions state machines */
   selectionPipeline: sfn.StateMachine;
   enhancementPipeline: sfn.StateMachine;
+  triagePipeline: sfn.StateMachine;
+  publishPipeline: sfn.StateMachine;
   /** DynamoDB sessions table */
   sessionsTable: dynamodb.ITable;
+  /** DynamoDB file processing table (DDR-061) */
+  fileProcessingTable: dynamodb.ITable;
   /** S3 media bucket */
   mediaBucket: s3.IBucket;
   /** All alarms from OperationsAlertStack (for dashboard alarm status widget) */
@@ -296,6 +300,40 @@ export class OperationsDashboardStack extends cdk.Stack {
       }),
     );
 
+    // --- Row 7b: Step Functions - Triage Pipeline (DDR-061) ---
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'Triage Pipeline: Executions',
+        left: [
+          props.triagePipeline.metricStarted({ period }),
+          props.triagePipeline.metricSucceeded({ period }),
+          props.triagePipeline.metricFailed({ period }),
+        ],
+        width: 8,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Triage Pipeline: Execution Time',
+        left: [
+          props.triagePipeline.metricTime({ period, statistic: 'p50' }),
+          props.triagePipeline.metricTime({ period, statistic: 'p90' }),
+          props.triagePipeline.metricTime({ period, statistic: 'p99' }),
+        ],
+        width: 8,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'Triage Pipeline: Failures & Timeouts',
+        left: [
+          props.triagePipeline.metricFailed({ period }),
+          props.triagePipeline.metricTimedOut({ period }),
+          props.triagePipeline.metricAborted({ period }),
+        ],
+        width: 8,
+        height: 6,
+      }),
+    );
+
     // --- Row 8: Gemini API (EMF custom metrics) ---
     dashboard.addWidgets(
       new cloudwatch.GraphWidget({
@@ -382,6 +420,46 @@ export class OperationsDashboardStack extends cdk.Stack {
       }),
     );
 
+    // --- Row 9b: MediaProcess Lambda (DDR-061) ---
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'MediaProcess: Files Processed',
+        left: [
+          emfMetric('FilesProcessed', 'Sum', { Operation: 'mediaProcess' }),
+        ],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'MediaProcess: Processing Duration',
+        left: [
+          emfMetric('FileProcessingMs', 'p50', { Operation: 'mediaProcess' }),
+          emfMetric('FileProcessingMs', 'p99', { Operation: 'mediaProcess' }),
+        ],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'MediaProcess: File Sizes',
+        left: [
+          emfMetric('FileSize', 'Average', { Operation: 'mediaProcess' }),
+          emfMetric('FileSize', 'Maximum', { Operation: 'mediaProcess' }),
+        ],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'MediaProcess: By File Type',
+        left: [
+          emfMetric('FilesProcessed', 'Sum', { FileType: 'image' }),
+          emfMetric('FilesProcessed', 'Sum', { FileType: 'video' }),
+        ],
+        stacked: true,
+        width: 6,
+        height: 6,
+      }),
+    );
+
     // --- Row 10: DynamoDB ---
     const dynamoMetric = (name: string, stat: string) =>
       new cloudwatch.Metric({
@@ -412,6 +490,41 @@ export class OperationsDashboardStack extends cdk.Stack {
           dynamoMetric('ThrottledRequests', 'Sum'),
           dynamoMetric('UserErrors', 'Sum'),
           dynamoMetric('SystemErrors', 'Sum'),
+        ],
+        width: 8,
+        height: 6,
+      }),
+    );
+
+    // --- Row 10b: File Processing Table (DDR-061) ---
+    const fpDynamoMetric = (name: string, stat: string) =>
+      new cloudwatch.Metric({
+        namespace: 'AWS/DynamoDB',
+        metricName: name,
+        dimensionsMap: { TableName: props.fileProcessingTable.tableName },
+        statistic: stat,
+        period,
+      });
+
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'File Processing Table: Capacity',
+        left: [fpDynamoMetric('ConsumedReadCapacityUnits', 'Sum')],
+        right: [fpDynamoMetric('ConsumedWriteCapacityUnits', 'Sum')],
+        width: 8,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'File Processing Table: Latency',
+        left: [fpDynamoMetric('SuccessfulRequestLatency', 'Average')],
+        width: 8,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'File Processing Table: Errors',
+        left: [
+          fpDynamoMetric('ThrottledRequests', 'Sum'),
+          fpDynamoMetric('UserErrors', 'Sum'),
         ],
         width: 8,
         height: 6,

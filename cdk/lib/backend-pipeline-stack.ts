@@ -27,6 +27,8 @@ export interface BackendPipelineStackProps extends cdk.StackProps {
   selectionProcessor: lambda.IFunction;
   enhancementProcessor: lambda.IFunction;
   videoProcessor: lambda.IFunction;
+  /** MediaProcess Lambda (DDR-061) */
+  mediaProcessProcessor: lambda.IFunction;
   /** ECR Private repository for webhook Lambda image (DDR-044) */
   webhookEcrRepo: ecr.IRepository;
   /** Webhook Lambda function to update after build (DDR-044) */
@@ -161,7 +163,7 @@ export class BackendPipelineStack extends cdk.Stack {
               // Per-Lambda flags (only used when shared code did NOT change, DDR-053)
               'BUILD_API=false; BUILD_TRIAGE=false; BUILD_DESC=false; BUILD_DOWNLOAD=false; BUILD_PUBLISH=false',
               'BUILD_ENHANCE=false; BUILD_WEBHOOK=false; BUILD_OAUTH=false',
-              'BUILD_THUMB=false; BUILD_SELECT=false; BUILD_VIDEO=false',
+              'BUILD_THUMB=false; BUILD_SELECT=false; BUILD_VIDEO=false; BUILD_MEDIAPROCESS=false',
 
               // Determine which images need rebuilding based on changed files
               'if [ -n "$LAST_BUILD" ] && git rev-parse "$LAST_BUILD" >/dev/null 2>&1; then '
@@ -182,7 +184,8 @@ export class BackendPipelineStack extends cdk.Stack {
                   + 'echo "$CHANGED" | grep -q "^cmd/thumbnail-lambda/" && BUILD_THUMB=true; '
                   + 'echo "$CHANGED" | grep -q "^cmd/selection-lambda/" && BUILD_SELECT=true; '
                   + 'echo "$CHANGED" | grep -q "^cmd/video-lambda/" && BUILD_VIDEO=true; '
-                  + 'echo "Selective build: API=$BUILD_API TRIAGE=$BUILD_TRIAGE DESC=$BUILD_DESC DOWNLOAD=$BUILD_DOWNLOAD PUBLISH=$BUILD_PUBLISH ENHANCE=$BUILD_ENHANCE WEBHOOK=$BUILD_WEBHOOK OAUTH=$BUILD_OAUTH THUMB=$BUILD_THUMB SELECT=$BUILD_SELECT VIDEO=$BUILD_VIDEO"; '
+                  + 'echo "$CHANGED" | grep -q "^cmd/media-process-lambda/" && BUILD_MEDIAPROCESS=true; '
+                  + 'echo "Selective build: API=$BUILD_API TRIAGE=$BUILD_TRIAGE DESC=$BUILD_DESC DOWNLOAD=$BUILD_DOWNLOAD PUBLISH=$BUILD_PUBLISH ENHANCE=$BUILD_ENHANCE WEBHOOK=$BUILD_WEBHOOK OAUTH=$BUILD_OAUTH THUMB=$BUILD_THUMB SELECT=$BUILD_SELECT VIDEO=$BUILD_VIDEO MEDIAPROCESS=$BUILD_MEDIAPROCESS"; '
                 + 'fi; '
               + 'else echo "No previous build commit found — rebuilding ALL images"; fi',
 
@@ -221,11 +224,12 @@ export class BackendPipelineStack extends cdk.Stack {
                 '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_THUMB" = "true" ]) && (build_image thumbnail-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest -t $PUBLIC_HEAVY_URI:thumb-$COMMIT -t $PUBLIC_HEAVY_URI:thumb-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-thumb) &',
                 '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_SELECT" = "true" ]) && (build_image selection-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-select) &',
                 '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_VIDEO" = "true" ]) && (build_image video-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-video) &',
+                '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_MEDIAPROCESS" = "true" ]) && (build_image media-process-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:mediaprocess-$COMMIT -t $PRIVATE_HEAVY_URI:mediaprocess-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-mediaprocess) &',
                 'wait',
               ].join('\n'),
 
               // Log build summary
-              'echo "=== Build summary ==="; for img in api triage desc download publish enhance webhook oauth thumb select video; do [ -f /tmp/built-$img ] && echo "  $img: BUILT" || echo "  $img: SKIPPED (unchanged)"; done',
+              'echo "=== Build summary ==="; for img in api triage desc download publish enhance webhook oauth thumb select video mediaprocess; do [ -f /tmp/built-$img ] && echo "  $img: BUILT" || echo "  $img: SKIPPED (unchanged)"; done',
             ],
           },
           post_build: {
@@ -255,6 +259,8 @@ export class BackendPipelineStack extends cdk.Stack {
                 '[ -f /tmp/built-thumb ] && docker push $PRIVATE_HEAVY_URI:thumb-latest &',
                 '[ -f /tmp/built-video ] && docker push $PRIVATE_HEAVY_URI:video-$COMMIT &',
                 '[ -f /tmp/built-video ] && docker push $PRIVATE_HEAVY_URI:video-latest &',
+                '[ -f /tmp/built-mediaprocess ] && docker push $PRIVATE_HEAVY_URI:mediaprocess-$COMMIT &',
+                '[ -f /tmp/built-mediaprocess ] && docker push $PRIVATE_HEAVY_URI:mediaprocess-latest &',
                 // ECR Private: webhook (only if built, DDR-044)
                 '[ -f /tmp/built-webhook ] && docker push $PRIVATE_WEBHOOK_URI:webhook-$COMMIT &',
                 '[ -f /tmp/built-webhook ] && docker push $PRIVATE_WEBHOOK_URI:webhook-latest &',
@@ -281,9 +287,10 @@ export class BackendPipelineStack extends cdk.Stack {
               'THUMB_TAG=$([ -f /tmp/built-thumb ] && echo "thumb-$COMMIT" || echo "thumb-latest")',
               'SELECT_TAG=$([ -f /tmp/built-select ] && echo "select-$COMMIT" || echo "select-latest")',
               'VIDEO_TAG=$([ -f /tmp/built-video ] && echo "video-$COMMIT" || echo "video-latest")',
+              'MEDIAPROCESS_TAG=$([ -f /tmp/built-mediaprocess ] && echo "mediaprocess-$COMMIT" || echo "mediaprocess-latest")',
               'WEBHOOK_TAG=$([ -f /tmp/built-webhook ] && echo "webhook-$COMMIT" || echo "webhook-latest")',
               'OAUTH_TAG=$([ -f /tmp/built-oauth ] && echo "oauth-$COMMIT" || echo "oauth-latest")',
-              `echo '{"apiImage":"'$PRIVATE_LIGHT_URI:$API_TAG'","triageImage":"'$PRIVATE_LIGHT_URI:$TRIAGE_TAG'","descImage":"'$PRIVATE_LIGHT_URI:$DESC_TAG'","downloadImage":"'$PRIVATE_LIGHT_URI:$DOWNLOAD_TAG'","publishImage":"'$PRIVATE_LIGHT_URI:$PUBLISH_TAG'","enhanceImage":"'$PRIVATE_LIGHT_URI:$ENHANCE_TAG'","thumbImage":"'$PRIVATE_HEAVY_URI:$THUMB_TAG'","selectImage":"'$PRIVATE_HEAVY_URI:$SELECT_TAG'","videoImage":"'$PRIVATE_HEAVY_URI:$VIDEO_TAG'","webhookImage":"'$PRIVATE_WEBHOOK_URI:$WEBHOOK_TAG'","oauthImage":"'$PRIVATE_OAUTH_URI:$OAUTH_TAG'"}' > imageDetail.json`,
+              `echo '{"apiImage":"'$PRIVATE_LIGHT_URI:$API_TAG'","triageImage":"'$PRIVATE_LIGHT_URI:$TRIAGE_TAG'","descImage":"'$PRIVATE_LIGHT_URI:$DESC_TAG'","downloadImage":"'$PRIVATE_LIGHT_URI:$DOWNLOAD_TAG'","publishImage":"'$PRIVATE_LIGHT_URI:$PUBLISH_TAG'","enhanceImage":"'$PRIVATE_LIGHT_URI:$ENHANCE_TAG'","thumbImage":"'$PRIVATE_HEAVY_URI:$THUMB_TAG'","selectImage":"'$PRIVATE_HEAVY_URI:$SELECT_TAG'","videoImage":"'$PRIVATE_HEAVY_URI:$VIDEO_TAG'","mediaprocessImage":"'$PRIVATE_HEAVY_URI:$MEDIAPROCESS_TAG'","webhookImage":"'$PRIVATE_WEBHOOK_URI:$WEBHOOK_TAG'","oauthImage":"'$PRIVATE_OAUTH_URI:$OAUTH_TAG'","commit":"'$COMMIT'"}' > imageDetail.json`,
             ],
           },
         },
@@ -358,7 +365,7 @@ export class BackendPipelineStack extends cdk.Stack {
       }),
     );
 
-    // --- Deploy (update all Lambda functions, DDR-053) ---
+    // --- Deploy (update all Lambda functions, DDR-053, DDR-061) ---
     const allLambdas = [
       { name: props.apiHandler.functionName, imageKey: 'apiImage' },
       { name: props.triageProcessor.functionName, imageKey: 'triageImage' },
@@ -369,6 +376,7 @@ export class BackendPipelineStack extends cdk.Stack {
       { name: props.thumbnailProcessor.functionName, imageKey: 'thumbImage' },
       { name: props.selectionProcessor.functionName, imageKey: 'selectImage' },
       { name: props.videoProcessor.functionName, imageKey: 'videoImage' },
+      { name: props.mediaProcessProcessor.functionName, imageKey: 'mediaprocessImage' },
       { name: props.webhookHandler.functionName, imageKey: 'webhookImage' },
       { name: props.oauthHandler.functionName, imageKey: 'oauthImage' },
     ];
@@ -429,6 +437,7 @@ export class BackendPipelineStack extends cdk.Stack {
             'export THUMB_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'thumbImage\'])")',
             'export SELECT_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'selectImage\'])")',
             'export VIDEO_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'videoImage\'])")',
+            'export MEDIAPROCESS_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'mediaprocessImage\'])")',
             'export WEBHOOK_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'webhookImage\'])")',
             'export OAUTH_IMAGE=$(python3 -c "import json; print(json.load(open(\'imageDetail.json\'))[\'oauthImage\'])")',
 
@@ -442,6 +451,7 @@ export class BackendPipelineStack extends cdk.Stack {
             `echo "Updating ${props.thumbnailProcessor.functionName} (public)..." && aws lambda update-function-code --function-name ${props.thumbnailProcessor.functionName} --image-uri $THUMB_IMAGE`,
             `echo "Updating ${props.selectionProcessor.functionName} (private)..." && aws lambda update-function-code --function-name ${props.selectionProcessor.functionName} --image-uri $SELECT_IMAGE`,
             `echo "Updating ${props.videoProcessor.functionName} (public)..." && aws lambda update-function-code --function-name ${props.videoProcessor.functionName} --image-uri $VIDEO_IMAGE`,
+            `echo "Updating ${props.mediaProcessProcessor.functionName} (private mediaprocess)..." && aws lambda update-function-code --function-name ${props.mediaProcessProcessor.functionName} --image-uri $MEDIAPROCESS_IMAGE`,
             `echo "Updating ${props.webhookHandler.functionName} (private webhook)..." && aws lambda update-function-code --function-name ${props.webhookHandler.functionName} --image-uri $WEBHOOK_IMAGE`,
             `echo "Updating ${props.oauthHandler.functionName} (private oauth)..." && aws lambda update-function-code --function-name ${props.oauthHandler.functionName} --image-uri $OAUTH_IMAGE`,
 
@@ -455,12 +465,14 @@ export class BackendPipelineStack extends cdk.Stack {
             `aws lambda wait function-updated --function-name ${props.thumbnailProcessor.functionName}`,
             `aws lambda wait function-updated --function-name ${props.selectionProcessor.functionName}`,
             `aws lambda wait function-updated --function-name ${props.videoProcessor.functionName}`,
+            `aws lambda wait function-updated --function-name ${props.mediaProcessProcessor.functionName}`,
             `aws lambda wait function-updated --function-name ${props.webhookHandler.functionName}`,
             `aws lambda wait function-updated --function-name ${props.oauthHandler.functionName}`,
 
             // Save successful build commit to SSM for conditional builds (DDR-047)
-            'export FULL_COMMIT=$(python3 -c "import json; d=json.load(open(\'imageDetail.json\')); uri=d[\'apiImage\']; print(uri.split(\':\')[-1].split(\'-\')[-1])" 2>/dev/null || echo "")',
-            'aws ssm put-parameter --name /ai-social-media/last-build-commit --value "$CODEBUILD_RESOLVED_SOURCE_VERSION" --type String --overwrite',
+            // Commit comes from imageDetail.json (written by Build stage) or CODEBUILD_RESOLVED_SOURCE_VERSION
+            'export SAVE_COMMIT=$(python3 -c "import json; d=json.load(open(\'imageDetail.json\')); print(d.get(\'commit\', \'\'))" 2>/dev/null || echo "$CODEBUILD_RESOLVED_SOURCE_VERSION")',
+            '[ -n "$SAVE_COMMIT" ] && aws ssm put-parameter --name /ai-social-media/last-build-commit --value "$SAVE_COMMIT" --type String --overwrite || echo "Skipping SSM save (no commit available)"',
           ],
         },
       },
@@ -480,6 +492,7 @@ export class BackendPipelineStack extends cdk.Stack {
           props.selectionProcessor.functionArn,
           props.enhancementProcessor.functionArn,
           props.videoProcessor.functionArn,
+          props.mediaProcessProcessor.functionArn,
           props.webhookHandler.functionArn,
           props.oauthHandler.functionArn,
         ],
