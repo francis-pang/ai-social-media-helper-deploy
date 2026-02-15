@@ -96,7 +96,7 @@ export class ApiGateway extends Construct {
     // authorizer before reaching the Lambda (auth errors, throttling, routing failures).
     const accessLogGroup = new logs.LogGroup(this, 'ApiAccessLog', {
       logGroupName: '/aws/apigateway/AiSocialMediaApi',
-      retention: logs.RetentionDays.THIRTY_DAYS,
+      retention: logs.RetentionDays.ONE_MONTH,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
