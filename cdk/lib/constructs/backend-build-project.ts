@@ -122,11 +122,10 @@ export function createBackendBuildProject(
             + 'else echo "No previous build commit found — rebuilding ALL images"; fi',
             // DDR-062: Pass COMMIT_HASH build arg to all images for version identity.
             // Wave 1: Light images (api, triage, desc, download, publish)
-            // IMPORTANT: Use '; ' separator (not newlines) — CodeBuild runs each line of a
-            // multi-line command entry in a separate shell. Using '; ' keeps everything in one
-            // shell so background jobs, `wait`, and function definitions are shared.
-            // The build_image() function must be defined INSIDE a joined command entry since
-            // shell functions cannot be exported across CodeBuild command boundaries.
+            // NOTE: Use '\n' join — CodeBuild executes a multi-line command entry as a single
+            // shell invocation. The build_image() function must be defined inside each wave
+            // entry because functions don't persist across separate command entries.
+            // '; ' join CANNOT be used here because `&;` is a bash syntax error.
             [
               'build_image() { set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"; echo "Building $cmd..."; docker build --provenance=false --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"; }',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_API" = "true" ]) && (build_image media-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:api-$COMMIT -t $PRIVATE_LIGHT_URI:api-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-api) &',
@@ -135,7 +134,7 @@ export function createBackendBuildProject(
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DOWNLOAD" = "true" ]) && (build_image download-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:download-$COMMIT -t $PRIVATE_LIGHT_URI:download-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-download) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_PUBLISH" = "true" ]) && (build_image publish-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:publish-$COMMIT -t $PRIVATE_LIGHT_URI:publish-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-publish) &',
               'wait',
-            ].join('; '),
+            ].join('\n'),
             // Wave 2: Light images (enhance, webhook, oauth)
             [
               'build_image() { set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"; echo "Building $cmd..."; docker build --provenance=false --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"; }',
@@ -143,7 +142,7 @@ export function createBackendBuildProject(
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_WEBHOOK" = "true" ]) && (build_image webhook-lambda Dockerfile.light "-t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest" "$PRIVATE_WEBHOOK_URI:webhook-latest" && touch /tmp/built-webhook) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_OAUTH" = "true" ]) && (build_image oauth-lambda Dockerfile.light "-t $PRIVATE_OAUTH_URI:oauth-$COMMIT -t $PRIVATE_OAUTH_URI:oauth-latest" "$PRIVATE_OAUTH_URI:oauth-latest" && touch /tmp/built-oauth) &',
               'wait',
-            ].join('; '),
+            ].join('\n'),
             // Wave 3: Heavy images (thumb, select, video, mediaprocess)
             [
               'build_image() { set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"; echo "Building $cmd..."; docker build --provenance=false --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"; }',
@@ -152,13 +151,13 @@ export function createBackendBuildProject(
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_VIDEO" = "true" ]) && (build_image video-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-video) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_MEDIAPROCESS" = "true" ]) && (build_image media-process-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:mediaprocess-$COMMIT -t $PRIVATE_HEAVY_URI:mediaprocess-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-mediaprocess) &',
               'wait',
-            ].join('; '),
+            ].join('\n'),
             'echo "=== Build summary ==="; for img in api triage desc download publish enhance webhook oauth thumb select video mediaprocess; do [ -f /tmp/built-$img ] && echo "  $img: BUILT" || echo "  $img: SKIPPED (unchanged)"; done',
           ],
         },
         post_build: {
           commands: [
-            // Push all built images in parallel — use '; ' separator (same CodeBuild fix as build waves).
+            // Push all built images in parallel — use '\n' join (not '; ') since `&;` is a syntax error.
             [
               'echo "Pushing built images in parallel..."',
               '[ -f /tmp/built-api ] && docker push $PRIVATE_LIGHT_URI:api-$COMMIT &',
@@ -192,7 +191,7 @@ export function createBackendBuildProject(
               '[ -f /tmp/built-video ] && docker push $PUBLIC_HEAVY_URI:video-$COMMIT &',
               '[ -f /tmp/built-video ] && docker push $PUBLIC_HEAVY_URI:video-latest &',
               'wait',
-            ].join('; '),
+            ].join('\n'),
             'export API_TAG=$([ -f /tmp/built-api ] && echo "api-$COMMIT" || echo "api-latest")',
             'export TRIAGE_TAG=$([ -f /tmp/built-triage ] && echo "triage-$COMMIT" || echo "triage-latest")',
             'export DESC_TAG=$([ -f /tmp/built-desc ] && echo "desc-$COMMIT" || echo "desc-latest")',
