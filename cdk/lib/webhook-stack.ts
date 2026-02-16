@@ -6,6 +6,7 @@ import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
+import * as logs from 'aws-cdk-lib/aws-logs';
 import { Construct } from 'constructs';
 
 export interface WebhookStackProps extends cdk.StackProps {
@@ -79,12 +80,33 @@ export class WebhookStack extends cdk.Stack {
       // No CORS — server-to-server from Meta
     });
 
-    // Throttling: 10 burst / 5 steady (webhook traffic is low)
+    // Risk 21: Access logging for webhook API — captures all requests including
+    // rejected/throttled ones before reaching the Lambda.
+    const accessLogGroup = new logs.LogGroup(this, 'WebhookApiAccessLog', {
+      logGroupName: '/aws/apigateway/AiSocialMediaWebhookApi',
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    // Throttling: 10 burst / 5 steady (webhook traffic is low) + access logging (Risk 21)
     const cfnStage = httpApi.defaultStage?.node.defaultChild as cdk.CfnResource;
     if (cfnStage) {
       cfnStage.addPropertyOverride('DefaultRouteSettings', {
         ThrottlingBurstLimit: 10,
         ThrottlingRateLimit: 5,
+      });
+      cfnStage.addPropertyOverride('AccessLogSettings', {
+        DestinationArn: accessLogGroup.logGroupArn,
+        Format: JSON.stringify({
+          requestId: '$context.requestId',
+          ip: '$context.identity.sourceIp',
+          method: '$context.httpMethod',
+          path: '$context.path',
+          status: '$context.status',
+          responseLength: '$context.responseLength',
+          latency: '$context.responseLatency',
+          integrationError: '$context.integrationErrorMessage',
+        }),
       });
     }
 
@@ -117,7 +139,7 @@ export class WebhookStack extends cdk.Stack {
       },
     });
 
-    // SSM read permission for OAuth credentials
+    // SSM read permission for OAuth credentials + CSRF state (Risk 19D)
     this.oauthHandler.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['ssm:GetParameter'],
@@ -125,17 +147,19 @@ export class WebhookStack extends cdk.Stack {
           `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/instagram-app-id`,
           `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/instagram-app-secret`,
           `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/instagram-oauth-redirect-uri`,
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/oauth-csrf-state`,
         ],
       }),
     );
 
-    // SSM write permission for storing tokens (DDR-048)
+    // SSM write permission for storing tokens (DDR-048) and CSRF state (Risk 19D)
     this.oauthHandler.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ['ssm:PutParameter'],
+        actions: ['ssm:PutParameter', 'ssm:DeleteParameter'],
         resources: [
           `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/instagram-access-token`,
           `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/instagram-user-id`,
+          `arn:aws:ssm:${this.region}:${this.account}:parameter/ai-social-media/prod/oauth-csrf-state`,
         ],
       }),
     );
@@ -152,6 +176,13 @@ export class WebhookStack extends cdk.Stack {
       integration: oauthIntegration,
     });
 
+    // Risk 19D: OAuth authorize endpoint — generates auth URL with CSRF state token.
+    httpApi.addRoutes({
+      path: '/oauth/authorize',
+      methods: [apigwv2.HttpMethod.GET],
+      integration: oauthIntegration,
+    });
+
     // =========================================================================
     // CloudFront Distribution (DDR-044: HTTPS, DDoS protection)
     // =========================================================================
@@ -160,6 +191,8 @@ export class WebhookStack extends cdk.Stack {
 
     const distribution = new cloudfront.Distribution(this, 'WebhookDistribution', {
       comment: 'AI Social Media Helper — Meta webhook notifications + Instagram OAuth callback',
+      // Risk 16: Enforce TLS 1.2+ with TLS 1.3 AEAD cipher suites.
+      minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
       defaultBehavior: {
         origin: apiOrigin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.HTTPS_ONLY,

@@ -56,6 +56,8 @@ export class RegistryStack extends cdk.Stack {
       repositoryName: 'ai-social-media-lambda-light',
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
+      imageScanOnPush: true, // Risk 27: Scan for vulnerabilities on every push
+      imageTagMutability: ecr.TagMutability.IMMUTABLE, // Risk 27: Prevent tag overwriting (supply-chain protection)
       lifecycleRules: [
         {
           maxImageCount: 10, // Keep recent images for rollback (DDR-046)
@@ -68,6 +70,8 @@ export class RegistryStack extends cdk.Stack {
       repositoryName: 'ai-social-media-lambda-heavy',
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
+      imageScanOnPush: true, // Risk 27
+      imageTagMutability: ecr.TagMutability.IMMUTABLE, // Risk 27
       lifecycleRules: [
         {
           maxImageCount: 10, // Keep recent images for rollback (DDR-046)
@@ -80,6 +84,8 @@ export class RegistryStack extends cdk.Stack {
       repositoryName: 'ai-social-media-webhook',
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
+      imageScanOnPush: true, // Risk 27
+      imageTagMutability: ecr.TagMutability.IMMUTABLE, // Risk 27
       lifecycleRules: [
         {
           maxImageCount: 10, // Keep recent images for rollback (DDR-046)
@@ -92,6 +98,8 @@ export class RegistryStack extends cdk.Stack {
       repositoryName: 'ai-social-media-oauth',
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
+      imageScanOnPush: true, // Risk 27
+      imageTagMutability: ecr.TagMutability.IMMUTABLE, // Risk 27
       lifecycleRules: [
         {
           maxImageCount: 10, // Keep recent images for rollback (DDR-046)

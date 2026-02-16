@@ -27,6 +27,17 @@ const env: cdk.Environment = {
 // Metric archive enabled by default (DDR-047); disable with -c enableMetricArchive=false
 const enableMetricArchive = app.node.tryGetContext('enableMetricArchive') !== 'false';
 
+// Risk 7+14: CloudFront domain for CORS lockdown.
+// Read from context (-c cloudFrontDomain=xxx.cloudfront.net) or SSM (written by FrontendStack).
+// On first deploy the parameter won't exist — CORS falls back to '*'/wildcard (temporary).
+let cloudFrontDomain = app.node.tryGetContext('cloudFrontDomain') as string | undefined;
+if (!cloudFrontDomain) {
+  const lookup = ssm.StringParameter.valueFromLookup(app, '/ai-social-media/cloudfront-domain');
+  if (lookup && !lookup.startsWith('dummy-value-for-')) {
+    cloudFrontDomain = lookup;
+  }
+}
+
 // =========================================================================
 // 1. Registry (DDR-046: all ECR repos in one stack, no Lambdas)
 // =========================================================================
@@ -46,6 +57,7 @@ const storage = new StorageStack(app, 'AiSocialMediaStorage', {
   env,
   enableMetricArchive,
   heavyEcrRepo: registry.heavyEcrRepo,
+  cloudFrontDomain, // Risk 14: S3 CORS locked to CloudFront domain
 });
 storage.addDependency(registry);
 
@@ -67,6 +79,7 @@ const backend = new BackendStack(app, 'AiSocialMediaBackend', {
   sessionsTable: storage.sessionsTable,
   fileProcessingTable: storage.fileProcessingTable,
   mediaProcessProcessor: storage.mediaProcessProcessor,
+  cloudFrontDomain, // Risk 7: API Gateway CORS locked to CloudFront domain
   lightEcrRepo: registry.lightEcrRepo,
   heavyEcrRepo: registry.heavyEcrRepo,
   publicLightEcrRepo: registry.publicLightEcrRepo,

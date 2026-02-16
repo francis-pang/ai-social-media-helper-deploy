@@ -3,6 +3,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
 
 export interface FrontendStackProps extends cdk.StackProps {
@@ -32,12 +33,14 @@ export class FrontendStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: FrontendStackProps) {
     super(scope, id, props);
 
-    // Read stable values from SSM — decoupled from BackendStack (DDR-054: deploy speed).
-    // These values are written by BackendStack and only change on first deploy.
+    // Read stable values — decoupled from BackendStack (DDR-054: deploy speed).
+    // API endpoint from SSM (not a secret — written by BackendStack).
     const apiEndpoint = ssm.StringParameter.valueForStringParameter(
       this, '/ai-social-media/api-endpoint');
-    const originVerifySecret = ssm.StringParameter.valueForStringParameter(
-      this, '/ai-social-media/origin-verify-secret');
+    // Origin-verify secret from Secrets Manager (Risk 5: crypto random, encrypted at rest).
+    const originSecret = secretsmanager.Secret.fromSecretNameV2(
+      this, 'OriginVerifySecret', 'ai-social-media/origin-verify-secret');
+    const originVerifySecret = originSecret.secretValue.unsafeUnwrap();
 
     // Import bucket by name — avoids cross-stack OAC cycle (DDR-045)
     // The bucket is created in StorageStack with autoDeleteObjects: true.
@@ -142,8 +145,27 @@ export class FrontendStack extends cdk.Stack {
       },
     });
 
+    // Risk 16: CloudFront standard logging to S3.
+    const cfLogBucket = new s3.Bucket(this, 'CloudFrontLogBucket', {
+      bucketName: `ai-social-media-cf-logs-${this.account}`,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      objectOwnership: s3.ObjectOwnership.OBJECT_WRITER,
+      removalPolicy: cdk.RemovalPolicy.RETAIN,
+      lifecycleRules: [{
+        id: 'expire-cf-logs-90d',
+        expiration: cdk.Duration.days(90),
+      }],
+    });
+
     this.distribution = new cloudfront.Distribution(this, 'Distribution', {
       comment: 'AI Social Media Helper — Preact SPA frontend + /api/* proxy to API Gateway',
+      // Risk 16: Enforce TLS 1.2+ (TLSv1.2_2021 supports TLS 1.3 with
+      // AES-256-GCM, AES-128-GCM, and CHACHA20-POLY1305 AEAD cipher suites).
+      minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
+      enableLogging: true,
+      logBucket: cfLogBucket,
+      logFilePrefix: 'frontend/',
       defaultBehavior: {
         origin: s3Origin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
@@ -202,6 +224,14 @@ export class FrontendStack extends cdk.Stack {
           },
         ],
       },
+    });
+
+    // Risk 7+14: Write CloudFront domain to SSM for cross-stack CORS lockdown.
+    // BackendStack and StorageStack read this via valueFromLookup at synth time.
+    new ssm.StringParameter(this, 'CloudFrontDomainParam', {
+      parameterName: '/ai-social-media/cloudfront-domain',
+      stringValue: this.distribution.distributionDomainName,
+      description: 'CloudFront distribution domain (consumed by Backend/Storage for CORS lockdown)',
     });
 
     // --- Outputs ---

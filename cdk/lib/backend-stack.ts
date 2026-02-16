@@ -7,6 +7,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as cognito from 'aws-cdk-lib/aws-cognito';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import { Construct } from 'constructs';
 
@@ -92,7 +93,18 @@ export class BackendStack extends cdk.Stack {
     // =====================================================================
     // 1. Processing Lambdas (9 functions + IAM)
     // =====================================================================
-    const originVerifySecret = cdk.Fn.select(2, cdk.Fn.split('/', this.stackId));
+    // Security: Cryptographically random origin-verify secret (Risk 5).
+    // Replaces the previous stack-ID-derived secret which was predictable.
+    // Stored in Secrets Manager (encrypted at rest, auditable via CloudTrail).
+    const originSecret = new secretsmanager.Secret(this, 'OriginVerifySecret', {
+      secretName: 'ai-social-media/origin-verify-secret',
+      description: 'Cryptographically random origin-verify secret for CloudFront → API Gateway authentication',
+      generateSecretString: {
+        excludePunctuation: true,
+        passwordLength: 32,
+      },
+    });
+    const originVerifySecret = originSecret.secretValue.unsafeUnwrap();
 
     const lambdas = new ProcessingLambdas(this, 'Lambdas', {
       mediaBucket: props.mediaBucket,
@@ -214,11 +226,8 @@ export class BackendStack extends cdk.Stack {
       stringValue: this.httpApi.apiEndpoint,
       description: 'API Gateway endpoint URL (consumed by FrontendStack via SSM)',
     });
-    new ssm.StringParameter(this, 'OriginVerifyParam', {
-      parameterName: '/ai-social-media/origin-verify-secret',
-      stringValue: originVerifySecret,
-      description: 'Origin-verify shared secret (consumed by FrontendStack via SSM)',
-    });
+    // Origin-verify secret is now in Secrets Manager (Risk 5).
+    // FrontendStack reads directly from Secrets Manager by name.
 
     // =====================================================================
     // CloudFormation Outputs
@@ -288,9 +297,6 @@ export class BackendStack extends cdk.Stack {
       description: 'Cognito User Pool Client ID (for frontend auth)',
     });
 
-    new cdk.CfnOutput(this, 'OriginVerifySecret', {
-      value: originVerifySecret,
-      description: 'Origin verify shared secret (set on CloudFront custom header)',
-    });
+    // Risk 5: OriginVerifySecret CfnOutput removed — secret no longer exposed in console.
   }
 }

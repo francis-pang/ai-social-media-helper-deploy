@@ -49,7 +49,7 @@ export class ApiGateway extends Construct {
         requireDigits: true,
         requireSymbols: true,
       },
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      removalPolicy: cdk.RemovalPolicy.RETAIN, // Risk 23: Protect user accounts from accidental stack deletion
     });
 
     this.userPoolClient = this.userPool.addClient('WebClient', {
@@ -62,6 +62,22 @@ export class ApiGateway extends Construct {
       idTokenValidity: cdk.Duration.hours(1),
       accessTokenValidity: cdk.Duration.hours(1),
       refreshTokenValidity: cdk.Duration.days(7),
+      // Risk 20: Explicitly disable implicit OAuth flow (security best practice).
+      // This SPA uses direct SRP/password auth, not OAuth redirects.
+      // Only authorization code grant with PKCE is permitted if OAuth is ever needed.
+      oAuth: {
+        flows: {
+          authorizationCodeGrant: true,
+          implicitCodeGrant: false,
+        },
+        scopes: [cognito.OAuthScope.OPENID, cognito.OAuthScope.PROFILE, cognito.OAuthScope.EMAIL],
+        callbackUrls: props.cloudFrontDomain
+          ? [`https://${props.cloudFrontDomain}/`]
+          : ['https://localhost/'],
+        logoutUrls: props.cloudFrontDomain
+          ? [`https://${props.cloudFrontDomain}/`]
+          : ['https://localhost/'],
+      },
     });
 
     // =====================================================================
@@ -73,9 +89,19 @@ export class ApiGateway extends Construct {
       identitySource: ['$request.header.Authorization'],
     });
 
+    // Risk 7: CORS locked to the CloudFront domain. Falls back to '*' only on
+    // first deploy before FrontendStack writes the domain to SSM. Subsequent
+    // deploys will always have the domain via SSM lookup in cdk.ts.
     const allowedOrigins = props.cloudFrontDomain
       ? [`https://${props.cloudFrontDomain}`]
-      : ['*']; // Fallback for initial deploy before CloudFront domain is known
+      : ['*'];
+    if (!props.cloudFrontDomain) {
+      cdk.Annotations.of(this).addWarningV2(
+        'cors-wildcard-fallback',
+        'CORS is set to * because cloudFrontDomain is not configured. ' +
+        'Deploy FrontendStack first, then re-deploy Backend to lock CORS.',
+      );
+    }
 
     this.httpApi = new apigwv2.HttpApi(this, 'HttpApi', {
       apiName: 'AiSocialMediaApi',

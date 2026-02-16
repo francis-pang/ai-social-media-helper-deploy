@@ -85,7 +85,7 @@ export function createBackendBuildProject(
             'docker pull $PRIVATE_WEBHOOK_URI:webhook-latest || true',
             'docker pull $PRIVATE_OAUTH_URI:oauth-latest || true',
             'go install golang.org/x/vuln/cmd/govulncheck@latest',
-            'govulncheck ./... || echo "WARN: govulncheck found vulnerabilities (non-blocking)"',
+            'govulncheck ./...', // Risk 28: Blocking — fails the build if known vulnerabilities are found
           ],
         },
         build: {
@@ -178,7 +178,8 @@ export function createBackendBuildProject(
               '  echo ">>> [$cmd] DONE rc=$rc elapsed=${elapsed}s $(date -u +%H:%M:%S)"',
               '  return $rc',
               '}',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_ENHANCE" = "true" ]) && (build_image enhance-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest -t $PUBLIC_LIGHT_URI:enhance-$COMMIT -t $PUBLIC_LIGHT_URI:enhance-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-enhance) &',
+              // Risk 37: App-specific images only go to private repos. Public repos reserved for generic base images.
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_ENHANCE" = "true" ]) && (build_image enhance-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-enhance) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_WEBHOOK" = "true" ]) && (build_image webhook-lambda Dockerfile.light "-t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest" "$PRIVATE_WEBHOOK_URI:webhook-latest" && touch /tmp/built-webhook) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_OAUTH" = "true" ]) && (build_image oauth-lambda Dockerfile.light "-t $PRIVATE_OAUTH_URI:oauth-$COMMIT -t $PRIVATE_OAUTH_URI:oauth-latest" "$PRIVATE_OAUTH_URI:oauth-latest" && touch /tmp/built-oauth) &',
               'wait; echo ">>> Wave 2 done: $(date -u +%H:%M:%S)"',
@@ -200,9 +201,11 @@ export function createBackendBuildProject(
               '  echo ">>> [$cmd] DONE rc=$rc elapsed=${elapsed}s $(date -u +%H:%M:%S)"',
               '  return $rc',
               '}',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_THUMB" = "true" ]) && (build_image thumbnail-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest -t $PUBLIC_HEAVY_URI:thumb-$COMMIT -t $PUBLIC_HEAVY_URI:thumb-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-thumb) &',
+              // Risk 37: App-specific images only go to private repos.
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_THUMB" = "true" ]) && (build_image thumbnail-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-thumb) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_SELECT" = "true" ]) && (build_image selection-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-select) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_VIDEO" = "true" ]) && (build_image video-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest -t $PUBLIC_HEAVY_URI:video-$COMMIT -t $PUBLIC_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-video) &',
+              // Risk 37: App-specific images only go to private repos.
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_VIDEO" = "true" ]) && (build_image video-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-video) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_MEDIAPROCESS" = "true" ]) && (build_image media-process-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:mediaprocess-$COMMIT -t $PRIVATE_HEAVY_URI:mediaprocess-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-mediaprocess) &',
               'wait; echo ">>> Wave 3 done: $(date -u +%H:%M:%S)"',
               'ENDWAVE3',
@@ -241,12 +244,7 @@ export function createBackendBuildProject(
               '[ -f /tmp/built-webhook ] && docker push $PRIVATE_WEBHOOK_URI:webhook-latest &',
               '[ -f /tmp/built-oauth ] && docker push $PRIVATE_OAUTH_URI:oauth-$COMMIT &',
               '[ -f /tmp/built-oauth ] && docker push $PRIVATE_OAUTH_URI:oauth-latest &',
-              '[ -f /tmp/built-enhance ] && docker push $PUBLIC_LIGHT_URI:enhance-$COMMIT &',
-              '[ -f /tmp/built-enhance ] && docker push $PUBLIC_LIGHT_URI:enhance-latest &',
-              '[ -f /tmp/built-thumb ] && docker push $PUBLIC_HEAVY_URI:thumb-$COMMIT &',
-              '[ -f /tmp/built-thumb ] && docker push $PUBLIC_HEAVY_URI:thumb-latest &',
-              '[ -f /tmp/built-video ] && docker push $PUBLIC_HEAVY_URI:video-$COMMIT &',
-              '[ -f /tmp/built-video ] && docker push $PUBLIC_HEAVY_URI:video-latest &',
+              // Risk 37: Public repo pushes removed — app-specific images stay in private repos only.
               'wait',
               'ENDPUSH',
             ].join('\n'),
@@ -303,25 +301,38 @@ export function createBackendBuildProject(
     }),
   );
 
+  // Risk 29: Scope ECR Public operations. Account-level actions require '*' per AWS docs.
+  // Repository-level actions are scoped to specific public repo ARNs.
   project.addToRolePolicy(
     new iam.PolicyStatement({
       actions: [
         'ecr-public:GetAuthorizationToken',
+        'ecr-public:DescribeRegistries',
+      ],
+      resources: ['*'], // Required by AWS — these are account-level operations
+    }),
+  );
+
+  project.addToRolePolicy(
+    new iam.PolicyStatement({
+      actions: [
         'ecr-public:BatchCheckLayerAvailability',
         'ecr-public:InitiateLayerUpload',
         'ecr-public:UploadLayerPart',
         'ecr-public:CompleteLayerUpload',
         'ecr-public:PutImage',
-        'ecr-public:DescribeRegistries',
       ],
-      resources: ['*'],
+      resources: [
+        `arn:aws:ecr-public::${props.account}:repository/${props.publicLightRepoName}`,
+        `arn:aws:ecr-public::${props.account}:repository/${props.publicHeavyRepoName}`,
+      ],
     }),
   );
 
   project.addToRolePolicy(
     new iam.PolicyStatement({
       actions: ['sts:GetServiceBearerToken'],
-      resources: ['*'],
+      resources: ['*'], // Required by AWS — account-level operation
     }),
   );
 
