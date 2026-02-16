@@ -218,8 +218,8 @@ export class ProcessingLambdas extends Construct {
       props.sessionsTable.grantReadWriteData(fn);
     }
 
-    // Triage Lambda: file processing table read (DDR-061 — reads file manifest for triage-run)
-    props.fileProcessingTable.grantReadData(this.triageProcessor);
+    // Triage Lambda: file processing table read/write (DDR-061 — reads manifest for triage-run, writes for triage-prepare)
+    props.fileProcessingTable.grantReadWriteData(this.triageProcessor);
     // API Lambda: file processing table read (DDR-061 — reads per-file statuses for results endpoint)
     props.fileProcessingTable.grantReadData(this.apiHandler);
 
