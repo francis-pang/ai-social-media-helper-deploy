@@ -27,17 +27,6 @@ const env: cdk.Environment = {
 // Metric archive enabled by default (DDR-047); disable with -c enableMetricArchive=false
 const enableMetricArchive = app.node.tryGetContext('enableMetricArchive') !== 'false';
 
-// Risk 7+14: CloudFront domain for CORS lockdown.
-// Read from context (-c cloudFrontDomain=xxx.cloudfront.net) or SSM (written by FrontendStack).
-// On first deploy the parameter won't exist — CORS falls back to '*'/wildcard (temporary).
-let cloudFrontDomain = app.node.tryGetContext('cloudFrontDomain') as string | undefined;
-if (!cloudFrontDomain) {
-  const lookup = ssm.StringParameter.valueFromLookup(app, '/ai-social-media/cloudfront-domain');
-  if (lookup && !lookup.startsWith('dummy-value-for-')) {
-    cloudFrontDomain = lookup;
-  }
-}
-
 // =========================================================================
 // 1. Registry (DDR-046: all ECR repos in one stack, no Lambdas)
 // =========================================================================
@@ -45,6 +34,14 @@ if (!cloudFrontDomain) {
 // breaking the chicken-and-egg dependency where DockerImageFunction requires
 // an image that the pipeline (which depends on the app stack) hasn't pushed yet.
 const registry = new RegistryStack(app, 'AiSocialMediaRegistry', { env });
+
+// Risk 7+14: CloudFront domain for CORS lockdown.
+// Read from context (-c cloudFrontDomain=xxx.cloudfront.net) or CLOUDFRONT_DOMAIN env var.
+// FrontendStack writes the domain to SSM; after first deploy, read it with:
+//   aws ssm get-parameter --name /ai-social-media/cloudfront-domain --query Parameter.Value --output text
+// Then re-deploy with: cdk deploy -c cloudFrontDomain=<value>
+const cloudFrontDomain = (app.node.tryGetContext('cloudFrontDomain')
+  || process.env.CLOUDFRONT_DOMAIN) as string | undefined;
 
 // =========================================================================
 // 2. Storage (STATEFUL — DDR-045: all S3 buckets + DynamoDB in one stack)
@@ -98,6 +95,7 @@ const frontend = new FrontendStack(app, 'AiSocialMediaFrontend', {
   frontendBucketName: storage.frontendBucket.bucketName,
 });
 frontend.addDependency(storage); // Bucket must exist before CloudFront OAC (DDR-045)
+frontend.addDependency(backend); // Risk 5: Secrets Manager origin-verify secret must exist before CloudFront resolves it
 
 // =========================================================================
 // 5. Frontend Pipeline (STATELESS): Preact SPA build -> S3 + CloudFront invalidation (DDR-035)

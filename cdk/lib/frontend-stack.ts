@@ -3,7 +3,6 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as origins from 'aws-cdk-lib/aws-cloudfront-origins';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
-import * as secretsmanager from 'aws-cdk-lib/aws-secretsmanager';
 import { Construct } from 'constructs';
 
 export interface FrontendStackProps extends cdk.StackProps {
@@ -38,9 +37,10 @@ export class FrontendStack extends cdk.Stack {
     const apiEndpoint = ssm.StringParameter.valueForStringParameter(
       this, '/ai-social-media/api-endpoint');
     // Origin-verify secret from Secrets Manager (Risk 5: crypto random, encrypted at rest).
-    const originSecret = secretsmanager.Secret.fromSecretNameV2(
-      this, 'OriginVerifySecret', 'ai-social-media/origin-verify-secret');
-    const originVerifySecret = originSecret.secretValue.unsafeUnwrap();
+    // Use SecretValue.secretsManager() to resolve by name — fromSecretNameV2 generates a
+    // partial ARN that CloudFormation's dynamic reference resolver can't find.
+    const originVerifySecret = cdk.SecretValue.secretsManager(
+      'ai-social-media/origin-verify-secret').unsafeUnwrap();
 
     // Import bucket by name — avoids cross-stack OAC cycle (DDR-045)
     // The bucket is created in StorageStack with autoDeleteObjects: true.

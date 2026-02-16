@@ -57,7 +57,8 @@ export class RegistryStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
       imageScanOnPush: true, // Risk 27: Scan for vulnerabilities on every push
-      imageTagMutability: ecr.TagMutability.IMMUTABLE, // Risk 27: Prevent tag overwriting (supply-chain protection)
+      // Risk 27: IMMUTABLE tags deferred — pipeline uses -latest tags for caching & Lambda refs.
+      // Requires pipeline refactor to commit-only tags before enabling.
       lifecycleRules: [
         {
           maxImageCount: 10, // Keep recent images for rollback (DDR-046)
@@ -71,7 +72,6 @@ export class RegistryStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
       imageScanOnPush: true, // Risk 27
-      imageTagMutability: ecr.TagMutability.IMMUTABLE, // Risk 27
       lifecycleRules: [
         {
           maxImageCount: 10, // Keep recent images for rollback (DDR-046)
@@ -85,7 +85,6 @@ export class RegistryStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
       imageScanOnPush: true, // Risk 27
-      imageTagMutability: ecr.TagMutability.IMMUTABLE, // Risk 27
       lifecycleRules: [
         {
           maxImageCount: 10, // Keep recent images for rollback (DDR-046)
@@ -99,7 +98,6 @@ export class RegistryStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.DESTROY,
       emptyOnDelete: true,
       imageScanOnPush: true, // Risk 27
-      imageTagMutability: ecr.TagMutability.IMMUTABLE, // Risk 27
       lifecycleRules: [
         {
           maxImageCount: 10, // Keep recent images for rollback (DDR-046)
