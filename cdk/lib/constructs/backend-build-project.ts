@@ -64,12 +64,17 @@ export function createBackendBuildProject(
       version: '0.2',
       phases: {
         install: {
-          'runtime-versions': {
-            golang: '1.26',
-          },
+          commands: [
+            // Go 1.26 is not yet in CodeBuild STANDARD_7_0's goenv; install manually.
+            'curl -sL https://go.dev/dl/go1.26.0.linux-amd64.tar.gz -o /tmp/go.tar.gz',
+            'rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tar.gz && rm /tmp/go.tar.gz',
+            'export PATH=/usr/local/go/bin:$HOME/go/bin:$PATH',
+            'go version',
+          ],
         },
         pre_build: {
           commands: [
+            'export PATH=/usr/local/go/bin:$HOME/go/bin:$PATH',
             'export DOCKER_BUILDKIT=1',
             'aws ecr get-login-password --region $AWS_REGION_NAME | docker login --username AWS --password-stdin $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION_NAME.amazonaws.com',
             'aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws',
