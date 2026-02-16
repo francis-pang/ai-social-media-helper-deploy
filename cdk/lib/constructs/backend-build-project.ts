@@ -65,7 +65,7 @@ export function createBackendBuildProject(
       phases: {
         install: {
           'runtime-versions': {
-            golang: '1.24',
+            golang: '1.26',
           },
         },
         pre_build: {
