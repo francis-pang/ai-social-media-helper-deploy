@@ -111,12 +111,15 @@ jobs:
 
           case "$TARGET" in
             core)
-              # DDR-047: Deploy order — Storage → Registry → Backend → Webhook
+              # DDR-047: Deploy order — Storage → Registry → Backend → Webhook → Alerts
+              # OperationsAlert included because it has cross-stack references to Backend
+              # resources; deploying Backend alone would fail if Alert's references changed.
               npx cdk deploy \
                 AiSocialMediaStorage \
                 AiSocialMediaRegistry \
                 AiSocialMediaBackend \
                 AiSocialMediaWebhook \
+                AiSocialMediaOperationsAlert \
                 --method=direct --require-approval=never --concurrency 2
               ;;
             full)
