@@ -33,7 +33,7 @@ export interface ProcessingLambdasProps {
  *
  * Lambda inventory:
  * - API: HTTP handler (256 MB, 30s)
- * - Triage: Step Functions triage pipeline (2 GB, 10 min)
+ * - Triage: Step Functions triage pipeline (4 GB, 10 min)
  * - Description: Async caption generation (2 GB, 5 min)
  * - Download: Async ZIP bundle creation (2 GB, 10 min)
  * - Publish: Step Functions publish pipeline (256 MB, 5 min)
@@ -106,12 +106,12 @@ export class ProcessingLambdas extends Construct {
       },
     });
 
-    // --- 2. Triage Lambda (DDR-053: 2 GB, 10 min, ECR Private light) ---
+    // --- 2. Triage Lambda (DDR-053: 4 GB, 10 min, ECR Private light) ---
     this.triageProcessor = createProcessingLambda(scope, 'TriageProcessor', {
       description: 'Triage pipeline — uploads media to Gemini, polls file status, runs AI content triage',
       code: imageCode(props.lightEcrRepo, 'triage-latest', 'triage-lambda'),
       timeout: cdk.Duration.minutes(10),
-      memorySize: 2048,
+      memorySize: 4096,
       ephemeralStorageSize: cdk.Size.mebibytes(6144),
       environment: sharedEnv,
     });
@@ -189,7 +189,7 @@ export class ProcessingLambdas extends Construct {
     // --- 9. Video Lambda (4 GB, 15 min, ECR Private heavy) ---
     this.videoProcessor = createProcessingLambda(scope, 'VideoProcessor', {
       description: 'Video processing — applies ffmpeg transformations (trim, resize, filters) per video file',
-      code: imageCode(props.heavyEcrRepo, 'select-latest', 'video-lambda'),
+      code: imageCode(props.heavyEcrRepo, 'video-latest', 'video-lambda'),
       timeout: cdk.Duration.minutes(15),
       memorySize: 4096,
       ephemeralStorageSize: cdk.Size.mebibytes(10240),

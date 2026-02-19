@@ -132,7 +132,7 @@ export class StorageStack extends cdk.Stack {
 
     this.mediaProcessProcessor = new lambda.DockerImageFunction(this, 'MediaProcessProcessor', {
       description: 'Per-file media processing — validates, converts, generates thumbnails, triggered by S3 events (DDR-061)',
-      code: imageCode(props!.heavyEcrRepo, 'select-latest', 'media-process-lambda'),
+      code: imageCode(props!.heavyEcrRepo, 'mediaprocess-latest', 'media-process-lambda'),
       architecture: lambda.Architecture.ARM_64,
       timeout: cdk.Duration.minutes(10),
       memorySize: 2048,
