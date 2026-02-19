@@ -35,7 +35,7 @@ export function createBackendDeployProject(
     projectName: 'AiSocialMediaBackendDeploy',
     description: 'Deploy built Docker images to all 11 Lambda functions and wait for update completion',
     environment: {
-      buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+      buildImage: codebuild.LinuxArmBuildImage.AMAZON_LINUX_2023_STANDARD_3_0,
       computeType: codebuild.ComputeType.SMALL,
     },
     buildSpec: codebuild.BuildSpec.fromObject({

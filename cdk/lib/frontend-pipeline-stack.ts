@@ -61,7 +61,7 @@ export class FrontendPipelineStack extends cdk.Stack {
       projectName: 'AiSocialMediaFrontendBuild',
       description: 'Build Preact SPA with Vite (Node 22, npm ci, npm run build) and inject Cognito config',
       environment: {
-        buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+        buildImage: codebuild.LinuxArmBuildImage.AMAZON_LINUX_2023_STANDARD_3_0,
         computeType: codebuild.ComputeType.SMALL,
       },
       environmentVariables: {
@@ -100,7 +100,7 @@ export class FrontendPipelineStack extends cdk.Stack {
       projectName: 'AiSocialMediaFrontendDeploy',
       description: 'Invalidate CloudFront cache after S3 deployment to serve latest SPA build',
       environment: {
-        buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+        buildImage: codebuild.LinuxArmBuildImage.AMAZON_LINUX_2023_STANDARD_3_0,
         computeType: codebuild.ComputeType.SMALL,
       },
       environmentVariables: {

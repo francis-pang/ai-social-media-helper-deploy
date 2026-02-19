@@ -52,6 +52,7 @@ export class WebhookStack extends cdk.Stack {
     this.webhookHandler = new lambda.DockerImageFunction(this, 'WebhookHandler', {
       description: 'Meta webhook — verifies GET challenges and processes Instagram notification events via HMAC',
       code: lambda.DockerImageCode.fromEcr(props.webhookEcrRepo, { tagOrDigest: 'webhook-latest' }),
+      architecture: lambda.Architecture.ARM_64,
       timeout: cdk.Duration.seconds(10),
       memorySize: 128,
       environment: {
@@ -128,6 +129,7 @@ export class WebhookStack extends cdk.Stack {
     this.oauthHandler = new lambda.DockerImageFunction(this, 'OAuthHandler', {
       description: 'Instagram OAuth — exchanges authorization code for long-lived token and stores in SSM',
       code: lambda.DockerImageCode.fromEcr(props.oauthEcrRepo, { tagOrDigest: 'oauth-latest' }),
+      architecture: lambda.Architecture.ARM_64,
       timeout: cdk.Duration.seconds(10),
       memorySize: 128,
       environment: {

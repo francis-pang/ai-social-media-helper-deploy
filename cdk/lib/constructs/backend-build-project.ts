@@ -43,13 +43,11 @@ export function createBackendBuildProject(
     projectName: 'AiSocialMediaBackendBuild',
     description: 'Build 11 Lambda Docker images (8 ECR Private + 3 ECR Public) with conditional rebuild detection',
     environment: {
-      buildImage: codebuild.LinuxBuildImage.STANDARD_7_0,
+      buildImage: codebuild.LinuxArmBuildImage.AMAZON_LINUX_2023_STANDARD_3_0,
       computeType: codebuild.ComputeType.MEDIUM,
       privileged: true, // Required for Docker-in-Docker
     },
-    cache: codebuild.Cache.bucket(props.artifactBucket, {
-      prefix: 'codebuild-cache/backend',
-    }),
+    cache: codebuild.Cache.local(codebuild.LocalCacheMode.DOCKER_LAYER, codebuild.LocalCacheMode.CUSTOM),
     environmentVariables: {
       PRIVATE_LIGHT_URI: { value: privateLight },
       PRIVATE_HEAVY_URI: { value: privateHeavy },
@@ -65,8 +63,8 @@ export function createBackendBuildProject(
       phases: {
         install: {
           commands: [
-            // Go 1.26 is not yet in CodeBuild STANDARD_7_0's goenv; install manually.
-            'curl -sL https://go.dev/dl/go1.26.0.linux-amd64.tar.gz -o /tmp/go.tar.gz',
+            // Go 1.26 is not yet in CodeBuild AL2023 ARM standard images; install manually.
+            'curl -sL https://go.dev/dl/go1.26.0.linux-arm64.tar.gz -o /tmp/go.tar.gz',
             'rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tar.gz && rm /tmp/go.tar.gz',
             'export PATH=/usr/local/go/bin:$HOME/go/bin:$PATH',
             'go version',

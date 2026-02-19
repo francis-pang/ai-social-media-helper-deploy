@@ -116,7 +116,7 @@ export class RegistryStack extends cdk.Stack {
         UsageText: 'Generic Lambda images (no ffmpeg) for AI social media helper.',
         AboutText: 'Light Lambda container images built on AL2023. Contains Go binaries without ffmpeg.',
         OperatingSystems: ['Linux'],
-        Architectures: ['x86-64'],
+        Architectures: ['ARM 64'],
       },
     });
 
@@ -126,7 +126,7 @@ export class RegistryStack extends cdk.Stack {
         UsageText: 'Generic Lambda images (with ffmpeg) for AI social media helper.',
         AboutText: 'Heavy Lambda container images built on AL2023 with ffmpeg/ffprobe for media processing.',
         OperatingSystems: ['Linux'],
-        Architectures: ['x86-64'],
+        Architectures: ['ARM 64'],
       },
     });
 

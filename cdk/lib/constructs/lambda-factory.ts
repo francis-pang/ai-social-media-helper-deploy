@@ -23,6 +23,7 @@ export function createProcessingLambda(
   return new lambda.DockerImageFunction(scope, id, {
     description: config.description,
     code: config.code,
+    architecture: lambda.Architecture.ARM_64,
     timeout: config.timeout,
     memorySize: config.memorySize,
     ephemeralStorageSize: config.ephemeralStorageSize,
