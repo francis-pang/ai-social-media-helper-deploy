@@ -5,7 +5,6 @@ import * as cw_actions from 'aws-cdk-lib/aws-cloudwatch-actions';
 import * as sns from 'aws-cdk-lib/aws-sns';
 import * as sns_subscriptions from 'aws-cdk-lib/aws-sns-subscriptions';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
-import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import { Construct } from 'constructs';
 
 /** Named Lambda entry for construct-ID-safe iteration */
@@ -21,21 +20,16 @@ export interface OperationsAlertStackProps extends cdk.StackProps {
   lambdas: NamedLambda[];
   /** API Gateway HTTP API */
   httpApi: apigwv2.HttpApi;
-  /** Step Functions state machines */
-  selectionPipeline: sfn.StateMachine;
-  enhancementPipeline: sfn.StateMachine;
-  triagePipeline: sfn.StateMachine;
-  publishPipeline: sfn.StateMachine;
   /** Email for alarm notifications (optional, pass via -c alertEmail=...) */
   alertEmail?: string;
 }
 
 /**
- * OperationsAlertStack provides alarms and X-Ray tracing (DDR-047: split from OperationsStack).
+ * OperationsAlertStack provides financial-risk alarms and X-Ray tracing (DDR-047: split from OperationsStack).
  *
  * Components:
  * - SNS alert topic with optional email subscription
- * - 17 CloudWatch alarms (Lambda errors/throttles, duration, API Gateway, Step Functions)
+ * - 1 CloudWatch alarm (API Gateway 4xx spike for abuse/DDoS detection)
  * - X-Ray active tracing on all Lambdas
  *
  * This stack changes often (alarm threshold tweaks) and deploys fast (~1-2 min).
@@ -79,58 +73,7 @@ export class OperationsAlertStack extends cdk.Stack {
     // =========================================================================
     this.alarms = [];
 
-    // --- Lambda Alarms (per function) ---
-    for (const { id, fn } of lambdas) {
-      const errAlarm = new cloudwatch.Alarm(this, `${id}-Errors`, {
-        alarmName: `AiSocialMedia-${id}-Errors`,
-        metric: fn.metricErrors({ period: cdk.Duration.minutes(1) }),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        alarmDescription: `Lambda ${id} has invocation errors`,
-      });
-      errAlarm.addAlarmAction(new cw_actions.SnsAction(this.alertTopic));
-      this.alarms.push(errAlarm);
-
-      const throttleAlarm = new cloudwatch.Alarm(this, `${id}-Throttles`, {
-        alarmName: `AiSocialMedia-${id}-Throttles`,
-        metric: fn.metricThrottles({ period: cdk.Duration.minutes(1) }),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        alarmDescription: `Lambda ${id} is being throttled`,
-      });
-      throttleAlarm.addAlarmAction(new cw_actions.SnsAction(this.alertTopic));
-      this.alarms.push(throttleAlarm);
-    }
-
-    // --- Lambda Duration Alarms (heavy Lambdas: selection=15min, enhancement=5min, video=15min) ---
-    const durationAlarms: Array<{ fn: lambda.IFunction; maxMs: number; name: string }> = [
-      { fn: lambdas[2].fn, maxMs: 12 * 60 * 1000, name: 'Selection' },   // 80% of 15min
-      { fn: lambdas[3].fn, maxMs: 4 * 60 * 1000, name: 'Enhancement' },  // 80% of 5min
-      { fn: lambdas[4].fn, maxMs: 12 * 60 * 1000, name: 'Video' },        // 80% of 15min
-    ];
-
-    for (const { fn, maxMs, name } of durationAlarms) {
-      const alarm = new cloudwatch.Alarm(this, `${name}Duration`, {
-        alarmName: `AiSocialMedia-${name}Duration`,
-        metric: fn.metricDuration({
-          period: cdk.Duration.minutes(5),
-          statistic: 'p99',
-        }),
-        threshold: maxMs,
-        evaluationPeriods: 1,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        alarmDescription: `${name} Lambda p99 duration approaching timeout`,
-      });
-      alarm.addAlarmAction(new cw_actions.SnsAction(this.alertTopic));
-      this.alarms.push(alarm);
-    }
-
-    // --- API Gateway Alarms ---
+    // --- API Gateway 4xx Spike Alarm (abuse/DDoS detection) ---
     const apiMetric = (metricName: string, stat: string, period: cdk.Duration) =>
       new cloudwatch.Metric({
         namespace: 'AWS/ApiGateway',
@@ -139,18 +82,6 @@ export class OperationsAlertStack extends cdk.Stack {
         statistic: stat,
         period,
       });
-
-    const api5xxAlarm = new cloudwatch.Alarm(this, 'Api5xxErrors', {
-      alarmName: 'AiSocialMedia-Api5xxErrors',
-      metric: apiMetric('5xx', 'Sum', cdk.Duration.minutes(5)),
-      threshold: 1,
-      evaluationPeriods: 1,
-      comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-      treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-      alarmDescription: 'API Gateway returning 5XX errors',
-    });
-    api5xxAlarm.addAlarmAction(new cw_actions.SnsAction(this.alertTopic));
-    this.alarms.push(api5xxAlarm);
 
     const api4xxAlarm = new cloudwatch.Alarm(this, 'Api4xxSpike', {
       alarmName: 'AiSocialMedia-Api4xxSpike',
@@ -163,28 +94,6 @@ export class OperationsAlertStack extends cdk.Stack {
     });
     api4xxAlarm.addAlarmAction(new cw_actions.SnsAction(this.alertTopic));
     this.alarms.push(api4xxAlarm);
-
-    // --- Step Functions Alarms ---
-    const pipelines = [
-      { sm: props.selectionPipeline, name: 'SelectionPipeline' },
-      { sm: props.enhancementPipeline, name: 'EnhancementPipeline' },
-      { sm: props.triagePipeline, name: 'TriagePipeline' },
-      { sm: props.publishPipeline, name: 'PublishPipeline' },
-    ];
-
-    for (const { sm, name } of pipelines) {
-      const alarm = new cloudwatch.Alarm(this, `${name}Failed`, {
-        alarmName: `AiSocialMedia-${name}Failed`,
-        metric: sm.metricFailed({ period: cdk.Duration.minutes(5) }),
-        threshold: 1,
-        evaluationPeriods: 1,
-        comparisonOperator: cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
-        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
-        alarmDescription: `${name} Step Functions execution failed`,
-      });
-      alarm.addAlarmAction(new cw_actions.SnsAction(this.alertTopic));
-      this.alarms.push(alarm);
-    }
 
     // =========================================================================
     // Outputs

@@ -173,10 +173,6 @@ const opsAlert = new OperationsAlertStack(app, 'AiSocialMediaOperationsAlert', {
   env,
   lambdas: lambdaEntries,
   httpApi: backend.httpApi,
-  selectionPipeline: backend.selectionPipeline,
-  enhancementPipeline: backend.enhancementPipeline,
-  triagePipeline: backend.triagePipeline,
-  publishPipeline: backend.publishPipeline,
   alertEmail: app.node.tryGetContext('alertEmail'),
 });
 opsAlert.addDependency(backend);
