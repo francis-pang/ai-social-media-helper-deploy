@@ -3,6 +3,7 @@ import * as cloudwatch from 'aws-cdk-lib/aws-cloudwatch';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as sfn from 'aws-cdk-lib/aws-stepfunctions';
 import * as dynamodb from 'aws-cdk-lib/aws-dynamodb';
+import * as cloudfront from 'aws-cdk-lib/aws-cloudfront';
 import * as s3 from 'aws-cdk-lib/aws-s3';
 import { Construct } from 'constructs';
 
@@ -24,6 +25,8 @@ export interface OperationsDashboardStackProps extends cdk.StackProps {
   fileProcessingTable: dynamodb.ITable;
   /** S3 media bucket */
   mediaBucket: s3.IBucket;
+  /** CloudFront distribution (for standard + additional metrics) */
+  distribution: cloudfront.IDistribution;
   /** All alarms from OperationsAlertStack (for dashboard alarm status widget) */
   alarms: cloudwatch.Alarm[];
 }
@@ -109,6 +112,56 @@ export class OperationsDashboardStack extends cdk.Stack {
         metrics: [apiGwMetric('4xx', 'Sum')],
         width: 6,
         height: 4,
+      }),
+    );
+
+    // --- Row 1b: CloudFront (standard + additional metrics) ---
+    const cfMetric = (name: string, stat: string) =>
+      new cloudwatch.Metric({
+        namespace: 'AWS/CloudFront',
+        metricName: name,
+        dimensionsMap: {
+          DistributionId: props.distribution.distributionId,
+          Region: 'Global',
+        },
+        statistic: stat,
+        period,
+      });
+
+    dashboard.addWidgets(
+      new cloudwatch.GraphWidget({
+        title: 'CloudFront Requests',
+        left: [cfMetric('Requests', 'Sum')],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'CloudFront Error Rates',
+        left: [
+          cfMetric('4xxErrorRate', 'Average'),
+          cfMetric('5xxErrorRate', 'Average'),
+          cfMetric('503ErrorRate', 'Average'),
+          cfMetric('504ErrorRate', 'Average'),
+        ],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'CloudFront Origin Latency',
+        left: [
+          cfMetric('OriginLatency', 'p50'),
+          cfMetric('OriginLatency', 'p90'),
+          cfMetric('OriginLatency', 'p99'),
+        ],
+        width: 6,
+        height: 6,
+      }),
+      new cloudwatch.GraphWidget({
+        title: 'CloudFront Data Transfer',
+        left: [cfMetric('BytesDownloaded', 'Sum')],
+        right: [cfMetric('BytesUploaded', 'Sum')],
+        width: 6,
+        height: 6,
       }),
     );
 

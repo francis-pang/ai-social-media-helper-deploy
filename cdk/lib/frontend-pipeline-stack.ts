@@ -95,15 +95,16 @@ export class FrontendPipelineStack extends cdk.Stack {
       }),
     });
 
-    // --- Deploy (S3 sync + CloudFront invalidation) ---
+    // --- Deploy (S3 sync with cache-control + CloudFront invalidation) ---
     const deployProject = new codebuild.PipelineProject(this, 'DeployProject', {
       projectName: 'AiSocialMediaFrontendDeploy',
-      description: 'Invalidate CloudFront cache after S3 deployment to serve latest SPA build',
+      description: 'Deploy SPA to S3 with cache-control headers and invalidate CloudFront cache',
       environment: {
         buildImage: codebuild.LinuxArmBuildImage.AMAZON_LINUX_2023_STANDARD_3_0,
         computeType: codebuild.ComputeType.SMALL,
       },
       environmentVariables: {
+        BUCKET_NAME: { value: props.frontendBucket.bucketName },
         DISTRIBUTION_ID: { value: props.distribution.distributionId },
       },
       buildSpec: codebuild.BuildSpec.fromObject({
@@ -111,7 +112,8 @@ export class FrontendPipelineStack extends cdk.Stack {
         phases: {
           build: {
             commands: [
-              'echo "Invalidating CloudFront distribution $DISTRIBUTION_ID..."',
+              'aws s3 sync $CODEBUILD_SRC_DIR s3://$BUCKET_NAME --exclude "*" --include "assets/*" --cache-control "public, max-age=31536000, immutable" --delete',
+              'aws s3 sync $CODEBUILD_SRC_DIR s3://$BUCKET_NAME --exclude "assets/*" --cache-control "public, max-age=300" --delete',
               'aws cloudfront create-invalidation --distribution-id $DISTRIBUTION_ID --paths "/*"',
             ],
           },
@@ -119,6 +121,7 @@ export class FrontendPipelineStack extends cdk.Stack {
       }),
     });
 
+    props.frontendBucket.grantReadWrite(deployProject);
     deployProject.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['cloudfront:CreateInvalidation'],
@@ -155,17 +158,10 @@ export class FrontendPipelineStack extends cdk.Stack {
     pipeline.addStage({
       stageName: 'Deploy',
       actions: [
-        new codepipeline_actions.S3DeployAction({
-          actionName: 'DeployToS3',
-          bucket: props.frontendBucket,
-          input: buildOutput,
-          runOrder: 1,
-        }),
         new codepipeline_actions.CodeBuildAction({
-          actionName: 'InvalidateCloudFront',
+          actionName: 'DeployAndInvalidate',
           project: deployProject,
           input: buildOutput,
-          runOrder: 2,
         }),
       ],
     });

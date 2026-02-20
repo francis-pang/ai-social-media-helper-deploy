@@ -50,55 +50,28 @@ export class FrontendStack extends cdk.Stack {
       this, 'FrontendBucket', props.frontendBucketName,
     );
 
-    // --- Security Headers Policy ---
-    // Mirrors the headers set in cmd/media-web/main.go lines 152-156,
-    // adapted for remote hosting (connect-src includes API Gateway and S3).
-    const responseHeadersPolicy = new cloudfront.ResponseHeadersPolicy(this, 'SecurityHeaders', {
-      responseHeadersPolicyName: 'AiSocialMediaSecurityHeaders',
-      securityHeadersBehavior: {
-        contentSecurityPolicy: {
-          contentSecurityPolicy: [
-            "default-src 'self'",
-            "img-src 'self' blob: data: https://*.s3.us-east-1.amazonaws.com https://*.s3.amazonaws.com",
-            "media-src 'self' https://*.s3.us-east-1.amazonaws.com https://*.s3.amazonaws.com",
-            "style-src 'self' 'unsafe-inline'",
-            "connect-src 'self' https://*.s3.us-east-1.amazonaws.com https://*.s3.amazonaws.com https://cognito-idp.us-east-1.amazonaws.com",
-          ].join('; '),
-          override: true,
-        },
-        strictTransportSecurity: {
-          accessControlMaxAge: cdk.Duration.seconds(63072000), // 2 years
-          includeSubdomains: true,
-          preload: true,
-          override: true,
-        },
-        contentTypeOptions: { override: true },
-        frameOptions: {
-          frameOption: cloudfront.HeadersFrameOption.DENY,
-          override: true,
-        },
-        referrerPolicy: {
-          referrerPolicy: cloudfront.HeadersReferrerPolicy.STRICT_ORIGIN_WHEN_CROSS_ORIGIN,
-          override: true,
-        },
-      },
-    });
+    // --- CSP Header Function (viewer-response) ---
+    // Managed SecurityHeadersPolicy covers HSTS, X-Content-Type-Options, X-Frame-Options,
+    // Referrer-Policy, and X-XSS-Protection. It does not support custom CSP values, so
+    // this CloudFront Function injects the CSP header on every viewer response.
+    const cspValue = [
+      "default-src 'self'",
+      "img-src 'self' blob: data: https://*.s3.us-east-1.amazonaws.com https://*.s3.amazonaws.com",
+      "media-src 'self' https://*.s3.us-east-1.amazonaws.com https://*.s3.amazonaws.com",
+      "style-src 'self' 'unsafe-inline'",
+      "connect-src 'self' https://*.s3.us-east-1.amazonaws.com https://*.s3.amazonaws.com https://cognito-idp.us-east-1.amazonaws.com",
+    ].join('; ');
 
-    // --- Cache Policies ---
-    // Short cache for index.html (frequently updated on deploy)
-    const defaultCachePolicy = new cloudfront.CachePolicy(this, 'DefaultCachePolicy', {
-      cachePolicyName: 'AiSocialMediaDefaultCache',
-      defaultTtl: cdk.Duration.minutes(5),
-      maxTtl: cdk.Duration.hours(1),
-      minTtl: cdk.Duration.seconds(0),
-    });
-
-    // Long cache for hashed assets (cache-busted by Vite's content hashing)
-    const assetsCachePolicy = new cloudfront.CachePolicy(this, 'AssetsCachePolicy', {
-      cachePolicyName: 'AiSocialMediaAssetsCache',
-      defaultTtl: cdk.Duration.days(365),
-      maxTtl: cdk.Duration.days(365),
-      minTtl: cdk.Duration.days(1),
+    const cspHeaderFunction = new cloudfront.Function(this, 'CspHeaderFunction', {
+      functionName: 'AiSocialMediaCspHeaders',
+      code: cloudfront.FunctionCode.fromInline([
+        'function handler(event) {',
+        '  var response = event.response;',
+        `  response.headers['content-security-policy'] = { value: "${cspValue}" };`,
+        '  return response;',
+        '}',
+      ].join('\n')),
+      comment: 'Inject CSP header — complements managed SecurityHeadersPolicy which lacks custom CSP support',
     });
 
     // --- CloudFront Function for SPA routing (DDR-062) ---
@@ -145,43 +118,36 @@ export class FrontendStack extends cdk.Stack {
       },
     });
 
-    // Risk 16: CloudFront standard logging to S3.
-    const cfLogBucket = new s3.Bucket(this, 'CloudFrontLogBucket', {
-      bucketName: `ai-social-media-cf-logs-${this.account}`,
-      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
-      encryption: s3.BucketEncryption.S3_MANAGED,
-      objectOwnership: s3.ObjectOwnership.OBJECT_WRITER,
-      removalPolicy: cdk.RemovalPolicy.RETAIN,
-      lifecycleRules: [{
-        id: 'expire-cf-logs-90d',
-        expiration: cdk.Duration.days(90),
-      }],
-    });
-
     this.distribution = new cloudfront.Distribution(this, 'Distribution', {
       comment: 'AI Social Media Helper — Preact SPA frontend + /api/* proxy to API Gateway',
-      // Risk 16: Enforce TLS 1.2+ (TLSv1.2_2021 supports TLS 1.3 with
-      // AES-256-GCM, AES-128-GCM, and CHACHA20-POLY1305 AEAD cipher suites).
       minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
-      enableLogging: true,
-      logBucket: cfLogBucket,
-      logFilePrefix: 'frontend/',
+      publishAdditionalMetrics: true,
       defaultBehavior: {
         origin: s3Origin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-        responseHeadersPolicy,
-        cachePolicy: defaultCachePolicy,
-        functionAssociations: [{
-          function: spaRoutingFunction,
-          eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
-        }],
+        responseHeadersPolicy: cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
+        cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+        functionAssociations: [
+          {
+            function: spaRoutingFunction,
+            eventType: cloudfront.FunctionEventType.VIEWER_REQUEST,
+          },
+          {
+            function: cspHeaderFunction,
+            eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE,
+          },
+        ],
       },
       additionalBehaviors: {
         '/assets/*': {
           origin: s3Origin,
           viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
-          responseHeadersPolicy,
-          cachePolicy: assetsCachePolicy,
+          responseHeadersPolicy: cloudfront.ResponseHeadersPolicy.SECURITY_HEADERS,
+          cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+          functionAssociations: [{
+            function: cspHeaderFunction,
+            eventType: cloudfront.FunctionEventType.VIEWER_RESPONSE,
+          }],
         },
         '/api/*': {
           origin: apiOrigin,
@@ -192,8 +158,6 @@ export class FrontendStack extends cdk.Stack {
         },
       },
       defaultRootObject: 'index.html',
-      // DDR-062: SPA routing is now handled by the CloudFront Function above
-      // instead of distribution-level errorResponses, which masked API 403/404 errors.
     });
 
     // --- OAC Bucket Policy (manual, avoids cross-stack cycle — DDR-045) ---

@@ -203,9 +203,11 @@ const opsDashboard = new OperationsDashboardStack(app, 'AiSocialMediaOperationsD
   sessionsTable: storage.sessionsTable,
   fileProcessingTable: storage.fileProcessingTable,
   mediaBucket: storage.mediaBucket,
+  distribution: frontend.distribution,
   alarms: opsAlert.alarms,
 });
 opsDashboard.addDependency(backend);
+opsDashboard.addDependency(frontend);
 opsDashboard.addDependency(storage);
 opsDashboard.addDependency(opsAlert);
 
