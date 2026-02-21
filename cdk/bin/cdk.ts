@@ -11,6 +11,7 @@ import { OperationsAlertStack } from '../lib/operations-alert-stack';
 import { OperationsDashboardStack } from '../lib/operations-dashboard-stack';
 import { OperationsMonitoringStack } from '../lib/operations-monitoring-stack';
 import { WebhookStack } from '../lib/webhook-stack';
+import { RagStack } from '../lib/rag-stack';
 
 const app = new cdk.App();
 
@@ -84,6 +85,27 @@ const backend = new BackendStack(app, 'AiSocialMediaBackend', {
 });
 backend.addDependency(storage);
 backend.addDependency(registry);
+
+// =========================================================================
+// 3b. RAG (STATELESS): Aurora Serverless v2 + pgvector, EventBridge ingest, 5 RAG Lambdas (RAG_PLANNING)
+// =========================================================================
+const rag = new RagStack(app, 'AiSocialMediaRag', {
+  env,
+  lambdas: {
+    apiHandler: backend.apiHandler,
+    triageProcessor: backend.triageProcessor,
+    selectionProcessor: backend.selectionProcessor,
+    descriptionProcessor: backend.descriptionProcessor,
+    downloadProcessor: backend.downloadProcessor,
+    publishProcessor: backend.publishProcessor,
+    thumbnailProcessor: backend.thumbnailProcessor,
+    enhancementProcessor: backend.enhancementProcessor,
+    videoProcessor: backend.videoProcessor,
+    mediaProcessProcessor: backend.mediaProcessProcessor,
+  },
+  httpApi: backend.httpApi,
+});
+rag.addDependency(backend);
 
 // =========================================================================
 // 4. Frontend (STATELESS): CloudFront with OAC, security headers, origin-verify via SSM, /api/* proxy (DDR-054)
