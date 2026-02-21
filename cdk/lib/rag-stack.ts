@@ -71,7 +71,7 @@ export class RagStack extends cdk.Stack {
     // =========================================================================
     const auroraCluster = new rds.DatabaseCluster(this, 'RagAuroraCluster', {
       engine: rds.DatabaseClusterEngine.auroraPostgres({
-        version: rds.AuroraPostgresEngineVersion.VER_15_5,
+        version: rds.AuroraPostgresEngineVersion.VER_15_8,
       }),
       writer: rds.ClusterInstance.serverlessV2('writer'),
       vpc,
@@ -151,9 +151,9 @@ export class RagStack extends cdk.Stack {
     ): lambda.DockerImageFunction =>
       new lambda.DockerImageFunction(this, id, {
         description: config.description,
-        code: lambda.DockerImageCode.fromImageAsset(
-          path.join(lambdaCodeRoot, dir),
-        ),
+        code: lambda.DockerImageCode.fromImageAsset(lambdaCodeRoot, {
+          file: path.join(dir, 'Dockerfile'),
+        }),
         architecture: lambda.Architecture.ARM_64,
         memorySize: config.memorySize,
         timeout: config.timeout,
