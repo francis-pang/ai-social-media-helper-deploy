@@ -11,6 +11,7 @@ import * as iam from 'aws-cdk-lib/aws-iam';
 import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
 import * as integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
+import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
 import { Construct } from 'constructs';
 
@@ -35,6 +36,8 @@ export interface RagStackProps extends cdk.StackProps {
   lambdas: ProcessingLambdasRef;
   /** HTTP API from BackendStack — for /api/rag/status route */
   httpApi: apigwv2.HttpApi;
+  /** ECR light repository for RAG Lambda images (used when localImages is not set) */
+  lightEcrRepo: ecr.IRepository;
 }
 
 /**
@@ -49,6 +52,7 @@ export class RagStack extends cdk.Stack {
   constructor(scope: Construct, id: string, props: RagStackProps) {
     super(scope, id, props);
 
+    const useLocalImages = this.node.tryGetContext('localImages') === 'true';
     const lambdaCodeRoot = path.join(__dirname, '..', '..', '..', 'ai-social-media-helper');
 
     // =========================================================================
@@ -139,9 +143,15 @@ export class RagStack extends cdk.Stack {
       RAG_PROFILES_TABLE_NAME: this.ragProfilesTable.tableName,
     };
 
+    const ragImageCode = (ecrTag: string, dir: string): lambda.DockerImageCode =>
+      useLocalImages
+        ? lambda.DockerImageCode.fromImageAsset(lambdaCodeRoot, { file: path.join(dir, 'Dockerfile') })
+        : lambda.DockerImageCode.fromEcr(props.lightEcrRepo, { tagOrDigest: ecrTag });
+
     const createRagLambda = (
       id: string,
       dir: string,
+      ecrTag: string,
       config: {
         description: string;
         memorySize: number;
@@ -151,9 +161,7 @@ export class RagStack extends cdk.Stack {
     ): lambda.DockerImageFunction =>
       new lambda.DockerImageFunction(this, id, {
         description: config.description,
-        code: lambda.DockerImageCode.fromImageAsset(lambdaCodeRoot, {
-          file: path.join(dir, 'Dockerfile'),
-        }),
+        code: ragImageCode(ecrTag, dir),
         architecture: lambda.Architecture.ARM_64,
         memorySize: config.memorySize,
         timeout: config.timeout,
@@ -162,7 +170,7 @@ export class RagStack extends cdk.Stack {
       });
 
     // --- rag-ingest-lambda ---
-    const ragIngestLambda = createRagLambda('RagIngestLambda', 'cmd/rag-ingest-lambda', {
+    const ragIngestLambda = createRagLambda('RagIngestLambda', 'cmd/rag-ingest-lambda', 'ragingest-latest', {
       description: 'RAG ingest — consumes ContentFeedback from SQS, embeds via Bedrock, upserts to Aurora',
       memorySize: 1024,
       timeout: cdk.Duration.minutes(2),
@@ -173,28 +181,28 @@ export class RagStack extends cdk.Stack {
     ragIngestLambda.addEventSource(new lambdaEventSources.SqsEventSource(ingestQueue));
 
     // --- rag-query-lambda ---
-    this.ragQueryLambda = createRagLambda('RagQueryLambda', 'cmd/rag-query-lambda', {
+    this.ragQueryLambda = createRagLambda('RagQueryLambda', 'cmd/rag-query-lambda', 'ragquery-latest', {
       description: 'RAG query — retrieves similar decisions for triage/selection/description',
       memorySize: 512,
       timeout: cdk.Duration.seconds(30),
     });
 
     // --- rag-status-lambda ---
-    const ragStatusLambda = createRagLambda('RagStatusLambda', 'cmd/rag-status-lambda', {
+    const ragStatusLambda = createRagLambda('RagStatusLambda', 'cmd/rag-status-lambda', 'ragstatus-latest', {
       description: 'RAG status — checks Aurora state, starts if stopped (frontend health check)',
       memorySize: 256,
       timeout: cdk.Duration.seconds(30),
     });
 
     // --- rag-autostop-lambda ---
-    const ragAutostopLambda = createRagLambda('RagAutostopLambda', 'cmd/rag-autostop-lambda', {
+    const ragAutostopLambda = createRagLambda('RagAutostopLambda', 'cmd/rag-autostop-lambda', 'ragautostop-latest', {
       description: 'RAG autostop — stops Aurora after 2h idle (runs every 15 min)',
       memorySize: 256,
       timeout: cdk.Duration.seconds(30),
     });
 
     // --- rag-profile-lambda ---
-    const ragProfileLambda = createRagLambda('RagProfileLambda', 'cmd/rag-profile-lambda', {
+    const ragProfileLambda = createRagLambda('RagProfileLambda', 'cmd/rag-profile-lambda', 'ragprofile-latest', {
       description: 'RAG profile — weekly batch: computes preference profile, writes to DynamoDB',
       memorySize: 2048,
       timeout: cdk.Duration.minutes(5),
