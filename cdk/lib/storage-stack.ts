@@ -134,9 +134,9 @@ export class StorageStack extends cdk.Stack {
       description: 'Per-file media processing — validates, converts, generates thumbnails, triggered by S3 events (DDR-061)',
       code: imageCode(props!.heavyEcrRepo, 'mediaprocess-latest', 'media-process-lambda'),
       architecture: lambda.Architecture.ARM_64,
-      timeout: cdk.Duration.minutes(10),
-      memorySize: 2048,
-      ephemeralStorageSize: cdk.Size.mebibytes(4096),
+      timeout: cdk.Duration.minutes(15),  // DDR-067: increased for large video compression with adaptive presets
+      memorySize: 4096,                   // DDR-067: ~2.3 vCPU (proportional allocation) for faster encoding
+      ephemeralStorageSize: cdk.Size.mebibytes(7168), // DDR-067: fits 4.6 GB input + compressed output
       environment: {
         MEDIA_BUCKET_NAME: this.mediaBucket.bucketName,
         DYNAMO_TABLE_NAME: this.sessionsTable.tableName,
