@@ -103,7 +103,6 @@ const rag = new RagStack(app, 'AiSocialMediaRag', {
     videoProcessor: backend.videoProcessor,
     mediaProcessProcessor: backend.mediaProcessProcessor,
   },
-  httpApi: backend.httpApi,
   lightEcrRepo: registry.lightEcrRepo,
 });
 rag.addDependency(backend);

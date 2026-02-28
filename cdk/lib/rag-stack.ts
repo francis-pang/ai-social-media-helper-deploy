@@ -8,8 +8,6 @@ import * as sqs from 'aws-cdk-lib/aws-sqs';
 import * as events from 'aws-cdk-lib/aws-events';
 import * as targets from 'aws-cdk-lib/aws-events-targets';
 import * as iam from 'aws-cdk-lib/aws-iam';
-import * as apigwv2 from 'aws-cdk-lib/aws-apigatewayv2';
-import * as integrations from 'aws-cdk-lib/aws-apigatewayv2-integrations';
 import * as ssm from 'aws-cdk-lib/aws-ssm';
 import * as ecr from 'aws-cdk-lib/aws-ecr';
 import * as lambdaEventSources from 'aws-cdk-lib/aws-lambda-event-sources';
@@ -34,20 +32,23 @@ export interface ProcessingLambdasRef {
 export interface RagStackProps extends cdk.StackProps {
   /** Processing Lambdas from BackendStack — for events:PutEvents and RAG_QUERY_LAMBDA_ARN */
   lambdas: ProcessingLambdasRef;
-  /** HTTP API from BackendStack — for /api/rag/status route */
-  httpApi: apigwv2.HttpApi;
   /** ECR light repository for RAG Lambda images (used when localImages is not set) */
   lightEcrRepo: ecr.IRepository;
 }
 
 /**
  * RagStack creates the RAG (Retrieval-Augmented Generation) infrastructure:
- * Aurora Serverless v2 (pgvector), DynamoDB preference profiles, EventBridge + SQS ingest,
- * 5 RAG Lambdas (ingest, query, status, autostop, profile), and API route.
+ * Aurora Serverless v2 (pgvector), DynamoDB preference profiles + staging,
+ * EventBridge + SQS ingest, 3 RAG Lambdas (ingest, query, profile).
+ *
+ * DDR-068: Weekly batch architecture — ingest writes raw feedback to DynamoDB
+ * staging table; profile Lambda runs weekly to embed, insert to Aurora, build
+ * profile, then stop Aurora. Auto-stop and status Lambdas removed.
  */
 export class RagStack extends cdk.Stack {
   public readonly ragQueryLambda: lambda.Function;
   public readonly ragProfilesTable: dynamodb.Table;
+  public readonly ragStagingTable: dynamodb.Table;
 
   constructor(scope: Construct, id: string, props: RagStackProps) {
     super(scope, id, props);
@@ -90,14 +91,26 @@ export class RagStack extends cdk.Stack {
     const auroraSecret = auroraCluster.secret!;
 
     // =========================================================================
-    // 3. DynamoDB table — rag-preference-profiles
+    // 3. DynamoDB tables
     // =========================================================================
+
+    // 3a. rag-preference-profiles — pre-computed preference profile + caption examples
     this.ragProfilesTable = new dynamodb.Table(this, 'RagPreferenceProfiles', {
       tableName: 'rag-preference-profiles',
       partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
       sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
       billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.RETAIN,
+    });
+
+    // 3b. rag-ingest-staging — raw ContentFeedback events awaiting weekly batch (DDR-068)
+    this.ragStagingTable = new dynamodb.Table(this, 'RagIngestStaging', {
+      tableName: 'rag-ingest-staging',
+      partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
+      sortKey: { name: 'SK', type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      timeToLiveAttribute: 'expiresAt',
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
 
     // =========================================================================
@@ -134,7 +147,7 @@ export class RagStack extends cdk.Stack {
     contentFeedbackRule.addTarget(new targets.SqsQueue(ingestQueue));
 
     // =========================================================================
-    // 6. Shared env vars for RAG Lambdas
+    // 6. Shared env vars + Lambda factory
     // =========================================================================
     const ragBaseEnv: Record<string, string> = {
       AURORA_CLUSTER_ARN: auroraCluster.clusterArn,
@@ -169,109 +182,70 @@ export class RagStack extends cdk.Stack {
         environment: { ...ragBaseEnv, ...config.environment },
       });
 
-    // --- rag-ingest-lambda ---
+    // --- rag-ingest-lambda (DDR-068: writes raw feedback to DynamoDB staging, no Bedrock/Aurora) ---
     const ragIngestLambda = createRagLambda('RagIngestLambda', 'cmd/rag-ingest-lambda', 'ragingest-latest', {
-      description: 'RAG ingest — consumes ContentFeedback from SQS, embeds via Bedrock, upserts to Aurora',
-      memorySize: 1024,
+      description: 'RAG ingest — stages raw ContentFeedback from SQS to DynamoDB (DDR-068)',
+      memorySize: 512,
       timeout: cdk.Duration.minutes(2),
       environment: {
-        BEDROCK_EMBEDDING_MODEL_ID: 'amazon.titan-embed-text-v2:0',
+        STAGING_TABLE_NAME: this.ragStagingTable.tableName,
       },
     });
     ragIngestLambda.addEventSource(new lambdaEventSources.SqsEventSource(ingestQueue));
 
-    // --- rag-query-lambda ---
+    // --- rag-query-lambda (DDR-068: DynamoDB profile only, no Aurora fallback) ---
     this.ragQueryLambda = createRagLambda('RagQueryLambda', 'cmd/rag-query-lambda', 'ragquery-latest', {
-      description: 'RAG query — retrieves similar decisions for triage/selection/description',
-      memorySize: 512,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    // --- rag-status-lambda ---
-    const ragStatusLambda = createRagLambda('RagStatusLambda', 'cmd/rag-status-lambda', 'ragstatus-latest', {
-      description: 'RAG status — checks Aurora state, starts if stopped (frontend health check)',
+      description: 'RAG query — returns pre-computed preference profile from DynamoDB (DDR-068)',
       memorySize: 256,
-      timeout: cdk.Duration.seconds(30),
+      timeout: cdk.Duration.seconds(10),
     });
 
-    // --- rag-autostop-lambda ---
-    const ragAutostopLambda = createRagLambda('RagAutostopLambda', 'cmd/rag-autostop-lambda', 'ragautostop-latest', {
-      description: 'RAG autostop — stops Aurora after 2h idle (runs every 15 min)',
-      memorySize: 256,
-      timeout: cdk.Duration.seconds(30),
-    });
-
-    // --- rag-profile-lambda ---
+    // --- rag-profile-lambda (DDR-068: weekly batch — embed, ingest to Aurora, build profile, stop Aurora) ---
     const ragProfileLambda = createRagLambda('RagProfileLambda', 'cmd/rag-profile-lambda', 'ragprofile-latest', {
-      description: 'RAG profile — weekly batch: computes preference profile, writes to DynamoDB',
+      description: 'RAG profile — weekly batch: stage→embed→Aurora→profile→cleanup→stop (DDR-068)',
       memorySize: 2048,
-      timeout: cdk.Duration.minutes(5),
+      timeout: cdk.Duration.minutes(10),
       environment: {
         SSM_API_KEY_PARAM: '/ai-social-media/prod/gemini-api-key',
+        STAGING_TABLE_NAME: this.ragStagingTable.tableName,
+        BEDROCK_EMBEDDING_MODEL_ID: 'amazon.titan-embed-text-v2:0',
       },
     });
 
-    const ragLambdas = [
-      ragIngestLambda,
-      this.ragQueryLambda,
-      ragStatusLambda,
-      ragAutostopLambda,
-      ragProfileLambda,
-    ];
-
     // =========================================================================
-    // 7. EventBridge Schedules
+    // 7. EventBridge Schedule — weekly profile build (DDR-068)
     // =========================================================================
-    new events.Rule(this, 'RagAutostopSchedule', {
-      schedule: events.Schedule.rate(cdk.Duration.minutes(15)),
-      targets: [new targets.LambdaFunction(ragAutostopLambda)],
-    });
-
     new events.Rule(this, 'RagProfileSchedule', {
       schedule: events.Schedule.rate(cdk.Duration.days(7)),
       targets: [new targets.LambdaFunction(ragProfileLambda)],
     });
 
     // =========================================================================
-    // 8. API Gateway route — GET /api/rag/status (no auth)
+    // 8. IAM Permissions
     // =========================================================================
-    // Use HttpRoute with RAG stack as scope to avoid circular dependency (route in Backend would reference RAG Lambda).
-    const statusIntegration = new integrations.HttpLambdaIntegration(
-      'RagStatusIntegration',
-      ragStatusLambda,
-    );
-    new apigwv2.HttpRoute(this, 'RagStatusRoute', {
-      httpApi: props.httpApi,
-      routeKey: apigwv2.HttpRouteKey.with('/api/rag/status', apigwv2.HttpMethod.GET),
-      integration: statusIntegration,
-    });
 
-    // =========================================================================
-    // 9. IAM Permissions
-    // =========================================================================
-    for (const fn of ragLambdas) {
-      auroraCluster.grantDataApiAccess(fn);
-      auroraSecret.grantRead(fn);
-      this.ragProfilesTable.grantReadWriteData(fn);
-    }
+    // Ingest Lambda: only needs staging table write
+    this.ragStagingTable.grantWriteData(ragIngestLambda);
 
-    ragIngestLambda.addToRolePolicy(
+    // Query Lambda: only needs profiles table read
+    this.ragProfilesTable.grantReadData(this.ragQueryLambda);
+
+    // Profile Lambda: full access — Aurora Data API, profiles write, staging read+delete, Bedrock, SSM, RDS start/stop
+    auroraCluster.grantDataApiAccess(ragProfileLambda);
+    auroraSecret.grantRead(ragProfileLambda);
+    this.ragProfilesTable.grantReadWriteData(ragProfileLambda);
+    this.ragStagingTable.grantReadWriteData(ragProfileLambda);
+
+    ragProfileLambda.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['bedrock:InvokeModel'],
         resources: ['*'],
       }),
     );
 
-    ragStatusLambda.addToRolePolicy(
+    ragProfileLambda.addToRolePolicy(
       new iam.PolicyStatement({
-        actions: ['rds:DescribeDBClusters', 'rds:StartDBCluster'],
-        resources: [auroraCluster.clusterArn],
-      }),
-    );
-
-    ragAutostopLambda.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['rds:DescribeDBClusters', 'rds:StopDBCluster'],
+        actions: ['rds:DescribeDBClusters', 'rds:StartDBCluster', 'rds:StopDBCluster'],
         resources: [auroraCluster.clusterArn],
       }),
     );
@@ -285,15 +259,9 @@ export class RagStack extends cdk.Stack {
         ],
       }),
     );
-    ragProfileLambda.addToRolePolicy(
-      new iam.PolicyStatement({
-        actions: ['bedrock:InvokeModel'],
-        resources: ['*'],
-      }),
-    );
 
     // =========================================================================
-    // 10. Cross-stack wiring — existing Lambdas
+    // 9. Cross-stack wiring — existing Lambdas
     // =========================================================================
     const allProcessingLambdas = [
       props.lambdas.apiHandler,
@@ -331,8 +299,6 @@ export class RagStack extends cdk.Stack {
       { fn: props.lambdas.selectionProcessor, id: 'SelectionProcessor' },
       { fn: props.lambdas.descriptionProcessor, id: 'DescriptionProcessor' },
     ];
-    // Use resource-based policy on RAG lambda (not grantInvoke) to avoid circular dependency:
-    // grantInvoke would add a policy to Backend's lambdas referencing RAG's ARN.
     for (const { fn, id } of ragQueryInvokeLambdas) {
       this.ragQueryLambda.addPermission('AllowInvokeFrom' + id, {
         principal: new iam.ServicePrincipal('lambda.amazonaws.com'),
@@ -364,6 +330,10 @@ export class RagStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'RagQueryLambdaArn', {
       value: this.ragQueryLambda.functionArn,
       description: 'RAG Query Lambda ARN',
+    });
+    new cdk.CfnOutput(this, 'RagStagingTableName', {
+      value: this.ragStagingTable.tableName,
+      description: 'RAG staging DynamoDB table name (DDR-068)',
     });
   }
 }

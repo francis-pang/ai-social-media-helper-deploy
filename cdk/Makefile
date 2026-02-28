@@ -14,7 +14,7 @@
 #   make diff                Preview changes across all stacks
 
 .PHONY: deploy deploy-full deploy-core deploy-edge deploy-observability deploy-pipelines
-.PHONY: deploy-storage deploy-registry deploy-backend deploy-frontend
+.PHONY: deploy-storage deploy-registry deploy-backend deploy-rag deploy-frontend
 .PHONY: deploy-webhook deploy-operations-alert deploy-operations-monitoring deploy-operations-dashboard
 .PHONY: deploy-fe-pipeline deploy-be-pipeline
 .PHONY: deploy-dev watch-backend watch-frontend synth diff
@@ -53,6 +53,9 @@ deploy-backend:
 
 deploy-frontend:
 	npx aws-cdk deploy AiSocialMediaFrontend --method=direct --exclusively
+
+deploy-rag:
+	npx aws-cdk deploy AiSocialMediaRag --method=direct --exclusively
 
 deploy-webhook:
 	npx aws-cdk deploy AiSocialMediaWebhook --method=direct --exclusively
