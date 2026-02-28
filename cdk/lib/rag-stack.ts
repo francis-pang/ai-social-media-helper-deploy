@@ -41,8 +41,8 @@ export interface RagStackProps extends cdk.StackProps {
  * Aurora Serverless v2 (pgvector), DynamoDB preference profiles + staging,
  * EventBridge + SQS ingest, 3 RAG Lambdas (ingest, query, profile).
  *
- * DDR-068: Weekly batch architecture — ingest writes raw feedback to DynamoDB
- * staging table; profile Lambda runs weekly to embed, insert to Aurora, build
+ * DDR-068: Daily batch architecture — ingest writes raw feedback to DynamoDB
+ * staging table; profile Lambda runs daily to embed, insert to Aurora, build
  * profile, then stop Aurora. Auto-stop and status Lambdas removed.
  */
 export class RagStack extends cdk.Stack {
@@ -103,7 +103,7 @@ export class RagStack extends cdk.Stack {
       removalPolicy: cdk.RemovalPolicy.RETAIN,
     });
 
-    // 3b. rag-ingest-staging — raw ContentFeedback events awaiting weekly batch (DDR-068)
+    // 3b. rag-ingest-staging — raw ContentFeedback events awaiting daily batch (DDR-068)
     this.ragStagingTable = new dynamodb.Table(this, 'RagIngestStaging', {
       tableName: 'rag-ingest-staging',
       partitionKey: { name: 'PK', type: dynamodb.AttributeType.STRING },
@@ -200,9 +200,9 @@ export class RagStack extends cdk.Stack {
       timeout: cdk.Duration.seconds(10),
     });
 
-    // --- rag-profile-lambda (DDR-068: weekly batch — embed, ingest to Aurora, build profile, stop Aurora) ---
+    // --- rag-profile-lambda (DDR-068: daily batch — embed, ingest to Aurora, build profile, stop Aurora) ---
     const ragProfileLambda = createRagLambda('RagProfileLambda', 'cmd/rag-profile-lambda', 'ragprofile-latest', {
-      description: 'RAG profile — weekly batch: stage→embed→Aurora→profile→cleanup→stop (DDR-068)',
+      description: 'RAG profile — daily batch: stage→embed→Aurora→profile→cleanup→stop (DDR-068)',
       memorySize: 2048,
       timeout: cdk.Duration.minutes(10),
       environment: {
@@ -213,10 +213,10 @@ export class RagStack extends cdk.Stack {
     });
 
     // =========================================================================
-    // 7. EventBridge Schedule — weekly profile build (DDR-068)
+    // 7. EventBridge Schedule — daily profile build (DDR-068)
     // =========================================================================
     new events.Rule(this, 'RagProfileSchedule', {
-      schedule: events.Schedule.rate(cdk.Duration.days(7)),
+      schedule: events.Schedule.rate(cdk.Duration.days(1)),
       targets: [new targets.LambdaFunction(ragProfileLambda)],
     });
 
