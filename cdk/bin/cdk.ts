@@ -165,6 +165,7 @@ const backendPipeline = new BackendPipelineStack(app, 'AiSocialMediaBackendPipel
   enhancementProcessor: backend.enhancementProcessor,
   videoProcessor: backend.videoProcessor,
   mediaProcessProcessor: backend.mediaProcessProcessor,
+  geminiBatchPollProcessor: backend.geminiBatchPollProcessor,
   webhookEcrRepo: registry.webhookEcrRepo,
   webhookHandler: webhook.webhookHandler,
   oauthEcrRepo: registry.oauthEcrRepo,

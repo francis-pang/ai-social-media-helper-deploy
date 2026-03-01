@@ -17,7 +17,7 @@ export interface BackendPipelineStackProps extends cdk.StackProps {
   publicLightRepoName: string;
   /** ECR Public heavy repository name (Thumbnail + Video Lambdas — generic code, DDR-041) */
   publicHeavyRepoName: string;
-  /** All Lambda functions to update after build (DDR-053: 11 total) */
+  /** All Lambda functions to update after build (DDR-053, DDR-077: 12 total) */
   apiHandler: lambda.IFunction;
   triageProcessor: lambda.IFunction;
   descriptionProcessor: lambda.IFunction;
@@ -29,6 +29,8 @@ export interface BackendPipelineStackProps extends cdk.StackProps {
   videoProcessor: lambda.IFunction;
   /** MediaProcess Lambda (DDR-061) */
   mediaProcessProcessor: lambda.IFunction;
+  /** GeminiBatchPoll Lambda (DDR-077) */
+  geminiBatchPollProcessor: lambda.IFunction;
   /** ECR Private repository for webhook Lambda image (DDR-044) */
   webhookEcrRepo: ecr.IRepository;
   /** Webhook Lambda function to update after build (DDR-044) */
@@ -109,6 +111,7 @@ export class BackendPipelineStack extends cdk.Stack {
       { functionName: props.selectionProcessor.functionName, functionArn: props.selectionProcessor.functionArn, imageKey: 'selectImage' },
       { functionName: props.videoProcessor.functionName, functionArn: props.videoProcessor.functionArn, imageKey: 'videoImage' },
       { functionName: props.mediaProcessProcessor.functionName, functionArn: props.mediaProcessProcessor.functionArn, imageKey: 'mediaprocessImage' },
+      { functionName: props.geminiBatchPollProcessor.functionName, functionArn: props.geminiBatchPollProcessor.functionArn, imageKey: 'geminiPollImage' },
       { functionName: props.webhookHandler.functionName, functionArn: props.webhookHandler.functionArn, imageKey: 'webhookImage' },
       { functionName: props.oauthHandler.functionName, functionArn: props.oauthHandler.functionArn, imageKey: 'oauthImage' },
     ];

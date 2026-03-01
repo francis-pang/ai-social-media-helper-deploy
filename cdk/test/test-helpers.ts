@@ -63,6 +63,7 @@ export const backendPipeline = new BackendPipelineStack(app, 'TestBackendPipelin
   enhancementProcessor: backend.enhancementProcessor,
   videoProcessor: backend.videoProcessor,
   mediaProcessProcessor: backend.mediaProcessProcessor,
+  geminiBatchPollProcessor: backend.geminiBatchPollProcessor,
   webhookEcrRepo: registry.webhookEcrRepo,
   webhookHandler: webhook.webhookHandler,
   oauthEcrRepo: registry.oauthEcrRepo,
