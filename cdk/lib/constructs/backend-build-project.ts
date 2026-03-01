@@ -104,28 +104,28 @@ export function createBackendBuildProject(
             'if [ -n "$LAST_BUILD" ] && git rev-parse "$LAST_BUILD" >/dev/null 2>&1; then '
               + 'CHANGED=$(git diff --name-only "$LAST_BUILD" HEAD); '
               + 'echo "=== Changed files since last build ($LAST_BUILD) ==="; echo "$CHANGED"; '
-              + 'if echo "$CHANGED" | grep -qE "^(internal/|go\\.mod|go\\.sum|cmd/media-lambda/Dockerfile\\.)"; then '
+              + 'if echo "$CHANGED" | grep -qE "^(internal/|go\\.mod|go\\.sum|build/Dockerfile\\.)"; then '
                 + 'echo "Shared code or Dockerfile changed — rebuilding ALL images"; export BUILD_ALL=true; '
               + 'else '
                 + 'export BUILD_ALL=false; '
-                + 'echo "$CHANGED" | grep -q "^cmd/media-lambda/" && export BUILD_API=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/triage-lambda/" && export BUILD_TRIAGE=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/description-lambda/" && export BUILD_DESC=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/download-lambda/" && export BUILD_DOWNLOAD=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/publish-lambda/" && export BUILD_PUBLISH=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/enhance-lambda/" && export BUILD_ENHANCE=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/webhook-lambda/" && export BUILD_WEBHOOK=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/oauth-lambda/" && export BUILD_OAUTH=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/thumbnail-lambda/" && export BUILD_THUMB=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/selection-lambda/" && export BUILD_SELECT=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/video-lambda/" && export BUILD_VIDEO=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/media-process-lambda/" && export BUILD_MEDIAPROCESS=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/api/" && export BUILD_API=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/triage-worker/" && export BUILD_TRIAGE=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/description-worker/" && export BUILD_DESC=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/download-worker/" && export BUILD_DOWNLOAD=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/publish-worker/" && export BUILD_PUBLISH=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/enhance-worker/" && export BUILD_ENHANCE=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/webhook/" && export BUILD_WEBHOOK=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/oauth/" && export BUILD_OAUTH=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/thumbnail-worker/" && export BUILD_THUMB=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/selection-worker/" && export BUILD_SELECT=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/video-worker/" && export BUILD_VIDEO=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/media-process/" && export BUILD_MEDIAPROCESS=true; '
                 + 'echo "Selective build: API=$BUILD_API TRIAGE=$BUILD_TRIAGE DESC=$BUILD_DESC DOWNLOAD=$BUILD_DOWNLOAD PUBLISH=$BUILD_PUBLISH ENHANCE=$BUILD_ENHANCE WEBHOOK=$BUILD_WEBHOOK OAUTH=$BUILD_OAUTH THUMB=$BUILD_THUMB SELECT=$BUILD_SELECT VIDEO=$BUILD_VIDEO MEDIAPROCESS=$BUILD_MEDIAPROCESS"; '
               + 'fi; '
             + 'else echo "No previous build commit found — rebuilding ALL images"; fi',
             // Diagnostic dump: log all build-decision variables so failures are diagnosable
             // from CloudWatch alone, without guessing.
-            'echo "=== Build decision vars ==="; echo "COMMIT=$COMMIT LAST_BUILD=$LAST_BUILD BUILD_ALL=$BUILD_ALL"; echo "BUILD_API=$BUILD_API BUILD_TRIAGE=$BUILD_TRIAGE BUILD_DESC=$BUILD_DESC BUILD_DOWNLOAD=$BUILD_DOWNLOAD BUILD_PUBLISH=$BUILD_PUBLISH"; echo "BUILD_ENHANCE=$BUILD_ENHANCE BUILD_WEBHOOK=$BUILD_WEBHOOK BUILD_OAUTH=$BUILD_OAUTH BUILD_THUMB=$BUILD_THUMB BUILD_SELECT=$BUILD_SELECT BUILD_VIDEO=$BUILD_VIDEO BUILD_MEDIAPROCESS=$BUILD_MEDIAPROCESS"; echo "PRIVATE_LIGHT_URI=$PRIVATE_LIGHT_URI PRIVATE_HEAVY_URI=$PRIVATE_HEAVY_URI"; echo "PRIVATE_WEBHOOK_URI=$PRIVATE_WEBHOOK_URI PRIVATE_OAUTH_URI=$PRIVATE_OAUTH_URI"; echo "PWD=$(pwd)"; ls -la cmd/media-lambda/Dockerfile.* 2>&1; echo "=== End vars ==="',
+            'echo "=== Build decision vars ==="; echo "COMMIT=$COMMIT LAST_BUILD=$LAST_BUILD BUILD_ALL=$BUILD_ALL"; echo "BUILD_API=$BUILD_API BUILD_TRIAGE=$BUILD_TRIAGE BUILD_DESC=$BUILD_DESC BUILD_DOWNLOAD=$BUILD_DOWNLOAD BUILD_PUBLISH=$BUILD_PUBLISH"; echo "BUILD_ENHANCE=$BUILD_ENHANCE BUILD_WEBHOOK=$BUILD_WEBHOOK BUILD_OAUTH=$BUILD_OAUTH BUILD_THUMB=$BUILD_THUMB BUILD_SELECT=$BUILD_SELECT BUILD_VIDEO=$BUILD_VIDEO BUILD_MEDIAPROCESS=$BUILD_MEDIAPROCESS"; echo "PRIVATE_LIGHT_URI=$PRIVATE_LIGHT_URI PRIVATE_HEAVY_URI=$PRIVATE_HEAVY_URI"; echo "PRIVATE_WEBHOOK_URI=$PRIVATE_WEBHOOK_URI PRIVATE_OAUTH_URI=$PRIVATE_OAUTH_URI"; echo "PWD=$(pwd)"; ls -la build/Dockerfile.* 2>&1; echo "=== End vars ==="',
             // DDR-062: Pass COMMIT_HASH build arg to all images for version identity.
             //
             // PARALLEL BUILD STRATEGY — heredoc + bash:
@@ -148,20 +148,20 @@ export function createBackendBuildProject(
               'echo ">>> Wave 1 start: $(date -u +%H:%M:%S) | BUILD_ALL=$BUILD_ALL"',
               'build_image() {',
               '  set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"',
-              '  echo ">>> [$cmd] START $(date -u +%H:%M:%S) — dockerfile=cmd/media-lambda/$df"',
+              '  echo ">>> [$cmd] START $(date -u +%H:%M:%S) — dockerfile=build/$df"',
               '  echo ">>> [$cmd] tags: $tags"',
               '  echo ">>> [$cmd] cache-from: $cache"',
               '  local start_ts=$(date +%s)',
-              '  docker build --provenance=false --progress=plain --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"',
+              '  docker build --provenance=false --progress=plain --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "build/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"',
               '  local rc=$?; local elapsed=$(( $(date +%s) - start_ts ))',
               '  echo ">>> [$cmd] DONE rc=$rc elapsed=${elapsed}s $(date -u +%H:%M:%S)"',
               '  return $rc',
               '}',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_API" = "true" ]) && (build_image media-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:api-$COMMIT -t $PRIVATE_LIGHT_URI:api-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-api) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_TRIAGE" = "true" ]) && (build_image triage-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:triage-$COMMIT -t $PRIVATE_LIGHT_URI:triage-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-triage) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DESC" = "true" ]) && (build_image description-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:desc-$COMMIT -t $PRIVATE_LIGHT_URI:desc-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-desc) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DOWNLOAD" = "true" ]) && (build_image download-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:download-$COMMIT -t $PRIVATE_LIGHT_URI:download-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-download) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_PUBLISH" = "true" ]) && (build_image publish-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:publish-$COMMIT -t $PRIVATE_LIGHT_URI:publish-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-publish) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_API" = "true" ]) && (build_image api Dockerfile.light "-t $PRIVATE_LIGHT_URI:api-$COMMIT -t $PRIVATE_LIGHT_URI:api-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-api) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_TRIAGE" = "true" ]) && (build_image triage-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:triage-$COMMIT -t $PRIVATE_LIGHT_URI:triage-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-triage) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DESC" = "true" ]) && (build_image description-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:desc-$COMMIT -t $PRIVATE_LIGHT_URI:desc-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-desc) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DOWNLOAD" = "true" ]) && (build_image download-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:download-$COMMIT -t $PRIVATE_LIGHT_URI:download-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-download) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_PUBLISH" = "true" ]) && (build_image publish-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:publish-$COMMIT -t $PRIVATE_LIGHT_URI:publish-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-publish) &',
               'wait; echo ">>> Wave 1 done: $(date -u +%H:%M:%S)"',
               'ENDWAVE1',
             ].join('\n'),
@@ -173,18 +173,18 @@ export function createBackendBuildProject(
               'echo ">>> Wave 2 start: $(date -u +%H:%M:%S) | BUILD_ALL=$BUILD_ALL"',
               'build_image() {',
               '  set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"',
-              '  echo ">>> [$cmd] START $(date -u +%H:%M:%S) — dockerfile=cmd/media-lambda/$df"',
+              '  echo ">>> [$cmd] START $(date -u +%H:%M:%S) — dockerfile=build/$df"',
               '  echo ">>> [$cmd] tags: $tags"',
               '  local start_ts=$(date +%s)',
-              '  docker build --provenance=false --progress=plain --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"',
+              '  docker build --provenance=false --progress=plain --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "build/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"',
               '  local rc=$?; local elapsed=$(( $(date +%s) - start_ts ))',
               '  echo ">>> [$cmd] DONE rc=$rc elapsed=${elapsed}s $(date -u +%H:%M:%S)"',
               '  return $rc',
               '}',
               // Risk 37: App-specific images only go to private repos. Public repos reserved for generic base images.
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_ENHANCE" = "true" ]) && (build_image enhance-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-enhance) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_WEBHOOK" = "true" ]) && (build_image webhook-lambda Dockerfile.light "-t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest" "$PRIVATE_WEBHOOK_URI:webhook-latest" && touch /tmp/built-webhook) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_OAUTH" = "true" ]) && (build_image oauth-lambda Dockerfile.light "-t $PRIVATE_OAUTH_URI:oauth-$COMMIT -t $PRIVATE_OAUTH_URI:oauth-latest" "$PRIVATE_OAUTH_URI:oauth-latest" && touch /tmp/built-oauth) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_ENHANCE" = "true" ]) && (build_image enhance-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-enhance) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_WEBHOOK" = "true" ]) && (build_image webhook Dockerfile.light "-t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest" "$PRIVATE_WEBHOOK_URI:webhook-latest" && touch /tmp/built-webhook) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_OAUTH" = "true" ]) && (build_image oauth Dockerfile.light "-t $PRIVATE_OAUTH_URI:oauth-$COMMIT -t $PRIVATE_OAUTH_URI:oauth-latest" "$PRIVATE_OAUTH_URI:oauth-latest" && touch /tmp/built-oauth) &',
               'wait; echo ">>> Wave 2 done: $(date -u +%H:%M:%S)"',
               'ENDWAVE2',
             ].join('\n'),
@@ -196,20 +196,20 @@ export function createBackendBuildProject(
               'echo ">>> Wave 3 start: $(date -u +%H:%M:%S) | BUILD_ALL=$BUILD_ALL"',
               'build_image() {',
               '  set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"',
-              '  echo ">>> [$cmd] START $(date -u +%H:%M:%S) — dockerfile=cmd/media-lambda/$df"',
+              '  echo ">>> [$cmd] START $(date -u +%H:%M:%S) — dockerfile=build/$df"',
               '  echo ">>> [$cmd] tags: $tags"',
               '  local start_ts=$(date +%s)',
-              '  docker build --provenance=false --progress=plain --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "cmd/media-lambda/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"',
+              '  docker build --provenance=false --progress=plain --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "build/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"',
               '  local rc=$?; local elapsed=$(( $(date +%s) - start_ts ))',
               '  echo ">>> [$cmd] DONE rc=$rc elapsed=${elapsed}s $(date -u +%H:%M:%S)"',
               '  return $rc',
               '}',
               // Risk 37: App-specific images only go to private repos.
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_THUMB" = "true" ]) && (build_image thumbnail-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-thumb) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_SELECT" = "true" ]) && (build_image selection-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-select) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_THUMB" = "true" ]) && (build_image thumbnail-worker Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-thumb) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_SELECT" = "true" ]) && (build_image selection-worker Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-select) &',
               // Risk 37: App-specific images only go to private repos.
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_VIDEO" = "true" ]) && (build_image video-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-video) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_MEDIAPROCESS" = "true" ]) && (build_image media-process-lambda Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:mediaprocess-$COMMIT -t $PRIVATE_HEAVY_URI:mediaprocess-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-mediaprocess) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_VIDEO" = "true" ]) && (build_image video-worker Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-video) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_MEDIAPROCESS" = "true" ]) && (build_image media-process Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:mediaprocess-$COMMIT -t $PRIVATE_HEAVY_URI:mediaprocess-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-mediaprocess) &',
               'wait; echo ">>> Wave 3 done: $(date -u +%H:%M:%S)"',
               'ENDWAVE3',
             ].join('\n'),

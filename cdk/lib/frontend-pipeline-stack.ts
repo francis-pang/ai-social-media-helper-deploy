@@ -77,19 +77,19 @@ export class FrontendPipelineStack extends cdk.Stack {
         phases: {
           install: {
             'runtime-versions': { nodejs: '22' },
-            commands: ['cd $CODEBUILD_SRC_DIR/web/frontend && npm ci'],
+            commands: ['cd $CODEBUILD_SRC_DIR/web && npm ci'],
           },
           build: {
             commands: [
               // DDR-062: Inject 7-char commit hash into frontend build via Vite env var.
               'export VITE_COMMIT_HASH=$(echo $CODEBUILD_RESOLVED_SOURCE_VERSION | cut -c1-7)',
-              'cd $CODEBUILD_SRC_DIR/web/frontend && npm audit --audit-level=high || echo "WARN: npm audit found vulnerabilities (non-blocking)"',
-              'cd $CODEBUILD_SRC_DIR/web/frontend && npm run build',
+              'cd $CODEBUILD_SRC_DIR/web && npm audit --audit-level=high || echo "WARN: npm audit found vulnerabilities (non-blocking)"',
+              'cd $CODEBUILD_SRC_DIR/web && npm run build',
             ],
           },
         },
         artifacts: {
-          'base-directory': 'web/frontend/dist',
+          'base-directory': 'web/dist',
           files: ['**/*'],
         },
       }),
