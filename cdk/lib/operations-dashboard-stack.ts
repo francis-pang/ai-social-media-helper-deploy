@@ -124,23 +124,32 @@ export class OperationsDashboardStack extends cdk.Stack {
         });
       };
 
+    // Auto-incrementing ID counter — CDK requires unique metric IDs within each graph widget.
+    // MathExpression.usingMetrics keys must be unique per widget; a global counter avoids collisions.
+    let _metricId = 0;
+    const nextId = () => `m${++_metricId}`;
+
     // ms → s conversion for metrics typically > 1 second (SFN execution time, job durations)
-    const msToSeconds = (m: cloudwatch.IMetric, label: string): cloudwatch.IMetric =>
-      new cloudwatch.MathExpression({
-        expression: 'm1 / 1000',
-        usingMetrics: { m1: m },
+    const msToSeconds = (m: cloudwatch.IMetric, label: string): cloudwatch.IMetric => {
+      const id = nextId();
+      return new cloudwatch.MathExpression({
+        expression: `${id} / 1000`,
+        usingMetrics: { [id]: m },
         label,
         period,
       });
+    };
 
     // FILL(m, 0) — show zero during idle periods rather than "no data" gaps
-    const fillZero = (m: cloudwatch.IMetric, label: string): cloudwatch.IMetric =>
-      new cloudwatch.MathExpression({
-        expression: 'FILL(m1, 0)',
-        usingMetrics: { m1: m },
+    const fillZero = (m: cloudwatch.IMetric, label: string): cloudwatch.IMetric => {
+      const id = nextId();
+      return new cloudwatch.MathExpression({
+        expression: `FILL(${id}, 0)`,
+        usingMetrics: { [id]: m },
         label,
         period,
       });
+    };
 
     // =========================================================================
     // Dashboard 1: AiSocialMedia-Triage
