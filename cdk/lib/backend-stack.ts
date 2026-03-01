@@ -246,6 +246,20 @@ export class BackendStack extends cdk.Stack {
       lambdas.enhancementProcessor.functionArn,
     );
 
+    // Inject triage worker log group name for the /api/triage/{id}/logs endpoint.
+    // The log group is auto-created by Lambda as /aws/lambda/<functionName>.
+    const triageLogGroupName = `/aws/lambda/${lambdas.triageProcessor.functionName}`;
+    this.apiHandler.addEnvironment('TRIAGE_LOG_GROUP_NAME', triageLogGroupName);
+    // Grant API Lambda read access to triage worker logs.
+    this.apiHandler.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ['logs:FilterLogEvents'],
+        resources: [
+          `arn:aws:logs:${this.region}:${this.account}:log-group:${triageLogGroupName}:*`,
+        ],
+      }),
+    );
+
     // =====================================================================
     // SSM Parameters for cross-stack decoupling (DDR-054: deploy speed)
     // =====================================================================
