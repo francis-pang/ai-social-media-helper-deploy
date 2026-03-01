@@ -5,6 +5,7 @@ import * as s3 from 'aws-cdk-lib/aws-s3';
 import * as iam from 'aws-cdk-lib/aws-iam';
 import * as firehose from 'aws-cdk-lib/aws-kinesisfirehose';
 import * as glue from 'aws-cdk-lib/aws-glue';
+import * as cr from 'aws-cdk-lib/custom-resources';
 import { Construct } from 'constructs';
 
 import { NamedLambda } from './operations-alert-stack.js';
@@ -232,6 +233,51 @@ export class OperationsMonitoringStack extends cdk.Stack {
     // Ensure table depends on database
     const tableNode = this.node.findChild('LogsTable');
     tableNode.node.addDependency(glueDb);
+
+    // =========================================================================
+    // Tag Glue resources (AWS::Glue::Database and AWS::Glue::Table have no
+    // Tags property in CloudFormation, so cdk.Tags.of(app) cannot reach them).
+    // AwsCustomResource calls glue:TagResource via SDK at deploy time instead.
+    // =========================================================================
+    const glueDbArn = `arn:${this.partition}:glue:${this.region}:${this.account}:database/ai_social_media_logs`;
+    const tagGlueDb = new cr.AwsCustomResource(this, 'TagGlueDatabase', {
+      onCreate: {
+        service: 'Glue',
+        action: 'tagResource',
+        parameters: {
+          ResourceArn: glueDbArn,
+          TagsToAdd: { Project: 'ai-social-media-helper' },
+        },
+        physicalResourceId: cr.PhysicalResourceId.of('TagGlueDatabase'),
+      },
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          actions: ['glue:TagResource'],
+          resources: [glueDbArn],
+        }),
+      ]),
+    });
+    tagGlueDb.node.addDependency(glueDb);
+
+    const glueTableArn = `arn:${this.partition}:glue:${this.region}:${this.account}:table/ai_social_media_logs/lambda_logs`;
+    const tagGlueTable = new cr.AwsCustomResource(this, 'TagGlueTable', {
+      onCreate: {
+        service: 'Glue',
+        action: 'tagResource',
+        parameters: {
+          ResourceArn: glueTableArn,
+          TagsToAdd: { Project: 'ai-social-media-helper' },
+        },
+        physicalResourceId: cr.PhysicalResourceId.of('TagGlueTable'),
+      },
+      policy: cr.AwsCustomResourcePolicy.fromStatements([
+        new iam.PolicyStatement({
+          actions: ['glue:TagResource'],
+          resources: [glueTableArn],
+        }),
+      ]),
+    });
+    tagGlueTable.node.addDependency(tableNode);
 
     // =========================================================================
     // Long-Term Metric Storage: Metric Streams -> Firehose -> S3 (DDR-047)

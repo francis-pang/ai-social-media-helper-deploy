@@ -276,11 +276,23 @@ export class StorageStack extends cdk.Stack {
       const handler = autoDeleteProvider.node.tryFindChild('Handler') as cdk.CfnResource | undefined;
       if (handler) {
         handler.addPropertyOverride('Tags', [{ Key: 'Project', Value: 'ai-social-media-helper' }]);
+      } else {
+        cdk.Annotations.of(this).addWarning(
+          '[DDR-049] autoDeleteObjects provider Handler not found — Project tag missing from its Lambda. CDK internal node ID may have changed.',
+        );
       }
       const role = autoDeleteProvider.node.tryFindChild('Role') as cdk.CfnResource | undefined;
       if (role) {
         role.addPropertyOverride('Tags', [{ Key: 'Project', Value: 'ai-social-media-helper' }]);
+      } else {
+        cdk.Annotations.of(this).addWarning(
+          '[DDR-049] autoDeleteObjects provider Role not found — Project tag missing from its IAM Role. CDK internal node ID may have changed.',
+        );
       }
+    } else {
+      cdk.Annotations.of(this).addWarning(
+        '[DDR-049] autoDeleteObjects custom resource provider not found — Project tag missing from its Lambda and IAM Role. CDK internal node ID may have changed.',
+      );
     }
 
     // =========================================================================
