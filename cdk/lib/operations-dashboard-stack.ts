@@ -128,12 +128,29 @@ export class OperationsDashboardStack extends cdk.Stack {
     let _metricId = 0;
     const nextId = () => `m${++_metricId}`;
 
-    // ms → s conversion for metrics typically > 1 second (SFN execution time, job durations)
+    // Strip the CloudWatch unit annotation from a Metric so MathExpression wrappers
+    // don't render "s * Milliseconds" or "KB * Bytes" on the y-axis.
+    const stripUnit = (m: cloudwatch.IMetric): cloudwatch.IMetric =>
+      m instanceof cloudwatch.Metric ? m.with({ unit: cloudwatch.Unit.NONE }) : m;
+
+    // ms → s conversion for metrics typically > 1 second (SFN execution time, job durations).
+    // Strips the source unit so the y-axis renders "s" not "s * Milliseconds".
     const msToSeconds = (m: cloudwatch.IMetric, label: string): cloudwatch.IMetric => {
       const id = nextId();
       return new cloudwatch.MathExpression({
         expression: `${id} / 1000`,
-        usingMetrics: { [id]: m },
+        usingMetrics: { [id]: stripUnit(m) },
+        label,
+        period,
+      });
+    };
+
+    // Bytes → KB conversion for file-size metrics in the hundreds-of-thousands range.
+    const bytesToKB = (m: cloudwatch.IMetric, label: string): cloudwatch.IMetric => {
+      const id = nextId();
+      return new cloudwatch.MathExpression({
+        expression: `${id} / 1024`,
+        usingMetrics: { [id]: stripUnit(m) },
         label,
         period,
       });
@@ -261,10 +278,10 @@ export class OperationsDashboardStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'MediaProcess: File Sizes',
         left: [
-          emfMetric('FileSize', 'Average', { FileType: 'image', Operation: 'mediaProcess' }),
-          emfMetric('FileSize', 'Average', { FileType: 'video', Operation: 'mediaProcess' }),
+          bytesToKB(emfMetric('FileSize', 'Average', { FileType: 'image', Operation: 'mediaProcess' }), 'image'),
+          bytesToKB(emfMetric('FileSize', 'Average', { FileType: 'video', Operation: 'mediaProcess' }), 'video'),
         ],
-        leftYAxis: { label: 'Bytes' },
+        leftYAxis: { label: 'KB' },
         width: 8,
         height: 6,
       }),
@@ -287,11 +304,11 @@ export class OperationsDashboardStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'Image Resize: Latency + Ratio',
         left: [
-          emfMetric('ImageResizeMs', 'p50', { FileType: 'image', Operation: 'mediaProcess' }),
-          emfMetric('ImageResizeMs', 'p99', { FileType: 'image', Operation: 'mediaProcess' }),
+          msToSeconds(emfMetric('ImageResizeMs', 'p50', { FileType: 'image', Operation: 'mediaProcess' }), 'p50'),
+          msToSeconds(emfMetric('ImageResizeMs', 'p99', { FileType: 'image', Operation: 'mediaProcess' }), 'p99'),
         ],
         right: [emfMetric('ImageCompressionRatio', 'Average', { FileType: 'image', Operation: 'mediaProcess' })],
-        leftYAxis: { label: 'ms' },
+        leftYAxis: { label: 's' },
         rightYAxis: { label: 'x' },
         width: 8,
         height: 6,
@@ -299,10 +316,10 @@ export class OperationsDashboardStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'Compression: Output Size',
         left: [
-          emfMetric('ImageSizeBytes', 'Average', { FileType: 'image', Operation: 'mediaProcess' }),
-          emfMetric('MediaFileSizeBytes', 'Average'),
+          bytesToKB(emfMetric('ImageSizeBytes', 'Average', { FileType: 'image', Operation: 'mediaProcess' }), 'image'),
+          bytesToKB(emfMetric('MediaFileSizeBytes', 'Average'), 'video'),
         ],
-        leftYAxis: { label: 'Bytes' },
+        leftYAxis: { label: 'KB' },
         width: 8,
         height: 6,
       }),
@@ -449,10 +466,12 @@ export class OperationsDashboardStack extends cdk.Stack {
     );
 
     // --- Triage Row 9: S3 Data Flow ---
+    // S3 storage metrics are published once per day. SingleValueWidget always fetches
+    // the most recent data point, making it immune to the 6-hour dashboard window.
     triageDash.addWidgets(
-      new cloudwatch.GraphWidget({
+      new cloudwatch.SingleValueWidget({
         title: 'S3 Bucket Size',
-        left: [new cloudwatch.Metric({
+        metrics: [new cloudwatch.Metric({
           namespace: 'AWS/S3',
           metricName: 'BucketSizeBytes',
           dimensionsMap: {
@@ -462,13 +481,12 @@ export class OperationsDashboardStack extends cdk.Stack {
           statistic: 'Average',
           period: cdk.Duration.days(1),
         })],
-        leftYAxis: { label: 'Bytes' },
         width: 8,
         height: 6,
       }),
-      new cloudwatch.GraphWidget({
+      new cloudwatch.SingleValueWidget({
         title: 'S3 Object Count',
-        left: [new cloudwatch.Metric({
+        metrics: [new cloudwatch.Metric({
           namespace: 'AWS/S3',
           metricName: 'NumberOfObjects',
           dimensionsMap: {
@@ -484,9 +502,9 @@ export class OperationsDashboardStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'S3 Media Flow (EMF)',
         left: [
-          emfMetric('MediaFileSizeBytes', 'Sum'),
+          bytesToKB(emfMetric('MediaFileSizeBytes', 'Sum'), 'video bytes'),
         ],
-        leftYAxis: { label: 'Bytes' },
+        leftYAxis: { label: 'KB' },
         width: 8,
         height: 6,
       }),
@@ -888,12 +906,12 @@ export class OperationsDashboardStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'API Handler: Duration',
         left: [
-          apiHandlerFn.metricDuration({ period, statistic: 'p50' }),
-          apiHandlerFn.metricDuration({ period, statistic: 'p90' }),
-          apiHandlerFn.metricDuration({ period, statistic: 'p99' }),
-          apiHandlerFn.metricDuration({ period, statistic: 'Maximum' }),
+          msToSeconds(apiHandlerFn.metricDuration({ period, statistic: 'p50' }), 'p50'),
+          msToSeconds(apiHandlerFn.metricDuration({ period, statistic: 'p90' }), 'p90'),
+          msToSeconds(apiHandlerFn.metricDuration({ period, statistic: 'p99' }), 'p99'),
+          msToSeconds(apiHandlerFn.metricDuration({ period, statistic: 'Maximum' }), 'max'),
         ],
-        leftYAxis: { label: 'ms' },
+        leftYAxis: { label: 's' },
         width: 8,
         height: 6,
       }),
@@ -974,9 +992,9 @@ export class OperationsDashboardStack extends cdk.Stack {
 
     // --- Infra Row 7: S3 Overview ---
     infraDash.addWidgets(
-      new cloudwatch.GraphWidget({
+      new cloudwatch.SingleValueWidget({
         title: 'S3 Bucket Size',
-        left: [new cloudwatch.Metric({
+        metrics: [new cloudwatch.Metric({
           namespace: 'AWS/S3',
           metricName: 'BucketSizeBytes',
           dimensionsMap: {
@@ -986,13 +1004,12 @@ export class OperationsDashboardStack extends cdk.Stack {
           statistic: 'Average',
           period: cdk.Duration.days(1),
         })],
-        leftYAxis: { label: 'Bytes' },
         width: 8,
         height: 6,
       }),
-      new cloudwatch.GraphWidget({
+      new cloudwatch.SingleValueWidget({
         title: 'S3 Object Count',
-        left: [new cloudwatch.Metric({
+        metrics: [new cloudwatch.Metric({
           namespace: 'AWS/S3',
           metricName: 'NumberOfObjects',
           dimensionsMap: {
@@ -1008,10 +1025,10 @@ export class OperationsDashboardStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'S3 Operations (EMF)',
         left: [
-          emfMetric('MediaFileSizeBytes', 'Sum'),
-          emfMetric('GeminiFilesApiUploadBytes', 'Sum'),
+          bytesToKB(emfMetric('MediaFileSizeBytes', 'Sum'), 'media bytes'),
+          bytesToKB(emfMetric('GeminiFilesApiUploadBytes', 'Sum'), 'gemini upload'),
         ],
-        leftYAxis: { label: 'Bytes' },
+        leftYAxis: { label: 'KB' },
         width: 8,
         height: 6,
       }),
