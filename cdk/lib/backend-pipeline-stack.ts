@@ -31,6 +31,8 @@ export interface BackendPipelineStackProps extends cdk.StackProps {
   mediaProcessProcessor: lambda.IFunction;
   /** GeminiBatchPoll Lambda (DDR-077) */
   geminiBatchPollProcessor: lambda.IFunction;
+  /** FBPrep Lambda (DDR-078, DDR-080) */
+  fbPrepProcessor: lambda.IFunction;
   /** ECR Private repository for webhook Lambda image (DDR-044) */
   webhookEcrRepo: ecr.IRepository;
   /** Webhook Lambda function to update after build (DDR-044) */
@@ -112,6 +114,7 @@ export class BackendPipelineStack extends cdk.Stack {
       { functionName: props.videoProcessor.functionName, functionArn: props.videoProcessor.functionArn, imageKey: 'videoImage' },
       { functionName: props.mediaProcessProcessor.functionName, functionArn: props.mediaProcessProcessor.functionArn, imageKey: 'mediaprocessImage' },
       { functionName: props.geminiBatchPollProcessor.functionName, functionArn: props.geminiBatchPollProcessor.functionArn, imageKey: 'geminiPollImage' },
+      { functionName: props.fbPrepProcessor.functionName, functionArn: props.fbPrepProcessor.functionArn, imageKey: 'fbPrepImage' },
       { functionName: props.webhookHandler.functionName, functionArn: props.webhookHandler.functionArn, imageKey: 'webhookImage' },
       { functionName: props.oauthHandler.functionName, functionArn: props.oauthHandler.functionArn, imageKey: 'oauthImage' },
     ];

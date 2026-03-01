@@ -67,6 +67,7 @@ export class BackendStack extends cdk.Stack {
   public readonly enhancementProcessor: lambda.Function;
   public readonly videoProcessor: lambda.Function;
   public readonly geminiBatchPollProcessor: lambda.Function;
+  public readonly fbPrepProcessor: lambda.Function;
   public readonly mediaProcessProcessor: lambda.IFunction;
 
   // ECR repositories (from RegistryStack — DDR-046)
@@ -124,6 +125,7 @@ export class BackendStack extends cdk.Stack {
     this.enhancementProcessor = lambdas.enhancementProcessor;
     this.videoProcessor = lambdas.videoProcessor;
     this.geminiBatchPollProcessor = lambdas.geminiBatchPollProcessor;
+    this.fbPrepProcessor = lambdas.fbPrepProcessor;
     this.mediaProcessProcessor = props.mediaProcessProcessor;
 
     // =====================================================================
@@ -244,6 +246,10 @@ export class BackendStack extends cdk.Stack {
     this.apiHandler.addEnvironment(
       'ENHANCE_LAMBDA_ARN',
       lambdas.enhancementProcessor.functionArn,
+    );
+    this.apiHandler.addEnvironment(
+      'FB_PREP_LAMBDA_ARN',
+      lambdas.fbPrepProcessor.functionArn,
     );
 
     // Inject triage worker log group name for the /api/triage/{id}/logs endpoint.

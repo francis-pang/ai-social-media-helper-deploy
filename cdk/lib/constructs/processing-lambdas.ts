@@ -24,7 +24,7 @@ export interface ProcessingLambdasProps {
 }
 
 /**
- * ProcessingLambdas creates all 10 Lambda functions and applies IAM permissions (DDR-035, DDR-053, DDR-077).
+ * ProcessingLambdas creates all 11 Lambda functions and applies IAM permissions (DDR-035, DDR-053, DDR-077, DDR-080).
  *
  * NOTE: This is a plain class (not a CDK Construct) to preserve CloudFormation
  * logical IDs. All resources are created with `scope` as their parent, keeping
@@ -42,6 +42,7 @@ export interface ProcessingLambdasProps {
  * - Enhancement: Per-photo AI editing + feedback (2 GB, 5 min)
  * - Video: Per-video ffmpeg enhancement (4 GB, 15 min)
  * - GeminiBatchPoll: Gemini Batch API poller (128 MB, 10s, DDR-077)
+ * - FBPrep: Per-item FB caption + location generation (2 GB, 5 min, DDR-078, DDR-080)
  *
  * IAM follows least privilege (DDR-053):
  * - All Lambdas: S3 read/write/delete, DynamoDB CRUD
@@ -60,6 +61,8 @@ export class ProcessingLambdas extends Construct {
   public readonly enhancementProcessor: lambda.DockerImageFunction;
   public readonly videoProcessor: lambda.DockerImageFunction;
   public readonly geminiBatchPollProcessor: lambda.DockerImageFunction;
+  /** FB Prep Lambda — per-item caption, location, timestamp generation (DDR-078, DDR-080) */
+  public readonly fbPrepProcessor: lambda.DockerImageFunction;
 
   constructor(scope: Construct, id: string, props: ProcessingLambdasProps) {
     super(scope, id);
@@ -209,6 +212,16 @@ export class ProcessingLambdas extends Construct {
       environment: sharedEnv,
     });
 
+    // --- 11. FB Prep Lambda (DDR-078, DDR-080: 2 GB, 5 min, ECR Private light) ---
+    this.fbPrepProcessor = createProcessingLambda(scope, 'FBPrepProcessor', {
+      description: 'FB Prep — generates captions, location tags, and timestamps for Facebook uploads via Gemini',
+      code: imageCode(props.lightEcrRepo, 'fb-prep-latest', 'fb-prep-lambda'),
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 2048,
+      ephemeralStorageSize: cdk.Size.mebibytes(1024),
+      environment: sharedEnv,
+    });
+
     // =====================================================================
     // IAM Permissions (least privilege per Lambda — DDR-035, DDR-053)
     // =====================================================================
@@ -223,6 +236,7 @@ export class ProcessingLambdas extends Construct {
       this.enhancementProcessor,
       this.videoProcessor,
       this.geminiBatchPollProcessor,
+      this.fbPrepProcessor,
     ];
 
     // All Lambdas: S3 read/write/delete + DynamoDB CRUD
@@ -251,6 +265,7 @@ export class ProcessingLambdas extends Construct {
       this.videoProcessor,
       this.thumbnailProcessor,
       this.geminiBatchPollProcessor,
+      this.fbPrepProcessor,
     ];
     for (const fn of aiLambdas) {
       fn.addToRolePolicy(
@@ -274,7 +289,7 @@ export class ProcessingLambdas extends Construct {
       );
     }
 
-    // API Lambda: permission to invoke domain-specific Lambdas asynchronously (DDR-053)
+    // API Lambda: permission to invoke domain-specific Lambdas asynchronously (DDR-053, DDR-080)
     this.apiHandler.addToRolePolicy(
       new iam.PolicyStatement({
         actions: ['lambda:InvokeFunction'],
@@ -282,6 +297,7 @@ export class ProcessingLambdas extends Construct {
           this.descriptionProcessor.functionArn,
           this.downloadProcessor.functionArn,
           this.enhancementProcessor.functionArn,
+          this.fbPrepProcessor.functionArn,
         ],
       }),
     );
