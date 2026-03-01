@@ -21,6 +21,7 @@ on:
         options:
           - core       # Storage + Registry + Backend + Webhook
           - full       # All stacks
+          - rag        # RAG stack only (Aurora, SQS, EventBridge)
           - pipelines  # BackendPipeline + FrontendPipeline only
           - edge       # Frontend only
           - observability  # Operations stacks
@@ -125,6 +126,11 @@ jobs:
             full)
               # DDR-045/047: Full ordered deploy
               npx cdk deploy --all --method=direct --require-approval=never --concurrency 5
+              ;;
+            rag)
+              # DDR-066: RAG stack requires explicit deployment (Aurora Serverless v2)
+              npx cdk deploy AiSocialMediaRag \
+                --method=direct --require-approval=never
               ;;
             pipelines)
               # Uses CODESTAR_CONNECTION_ARN secret if set, else SSM /ai-social-media/codestar-connection-arn

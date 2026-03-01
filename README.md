@@ -20,6 +20,7 @@ The CDK app defines these stacks:
 | `AiSocialMediaStorage` | Stateful resources: media/frontend/archive/artifact S3 buckets and DynamoDB sessions table |
 | `AiSocialMediaRegistry` | ECR private/public repositories used by Lambda container images |
 | `AiSocialMediaBackend` | API Gateway, Cognito, backend Lambda functions, Step Functions orchestration |
+| `AiSocialMediaRag` | RAG decision memory: Aurora Serverless v2 (pgvector), DynamoDB staging, SQS, EventBridge |
 | `AiSocialMediaFrontend` | CloudFront + S3 frontend hosting with `/api/*` proxy behavior |
 | `AiSocialMediaWebhook` | Meta webhook + OAuth Lambda/API infrastructure |
 | `AiSocialMediaBackendPipeline` | CI/CD pipeline to build and deploy backend Lambda container images |
@@ -85,6 +86,7 @@ make deploy-storage
 make deploy-registry
 make deploy-backend
 make deploy-frontend
+make deploy-rag
 make deploy-webhook
 make deploy-operations-alert
 make deploy-operations-monitoring
