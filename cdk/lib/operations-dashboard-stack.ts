@@ -211,12 +211,12 @@ export class OperationsDashboardStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'MediaProcess: Duration',
         left: [
-          mediaProcessFn.metricDuration({ period, statistic: 'p50' }),
-          mediaProcessFn.metricDuration({ period, statistic: 'p90' }),
-          mediaProcessFn.metricDuration({ period, statistic: 'p99' }),
-          mediaProcessFn.metricDuration({ period, statistic: 'Maximum' }),
+          msToSeconds(mediaProcessFn.metricDuration({ period, statistic: 'p50' }), 'p50'),
+          msToSeconds(mediaProcessFn.metricDuration({ period, statistic: 'p90' }), 'p90'),
+          msToSeconds(mediaProcessFn.metricDuration({ period, statistic: 'p99' }), 'p99'),
+          msToSeconds(mediaProcessFn.metricDuration({ period, statistic: 'Maximum' }), 'max'),
         ],
-        leftYAxis: { label: 'ms' },
+        leftYAxis: { label: 's' },
         width: 8,
         height: 6,
       }),
@@ -235,74 +235,73 @@ export class OperationsDashboardStack extends cdk.Stack {
     );
 
     // --- Triage Row 3: File Processing (EMF) ---
+    // Metrics stored with {Operation, FileType} — must query both dims together (DDR-075 Bug 4)
     triageDash.addWidgets(
       new cloudwatch.GraphWidget({
         title: 'MediaProcess: Files Processed',
         left: [
-          emfMetric('FilesProcessed', 'Sum', { Operation: 'mediaProcess' }),
+          emfMetric('FilesProcessed', 'Sum', { FileType: 'image', Operation: 'mediaProcess' }),
+          emfMetric('FilesProcessed', 'Sum', { FileType: 'video', Operation: 'mediaProcess' }),
         ],
-        width: 6,
+        stacked: true,
+        width: 8,
         height: 6,
       }),
       new cloudwatch.GraphWidget({
         title: 'MediaProcess: Processing Duration',
         left: [
-          emfMetric('FileProcessingMs', 'p50', { Operation: 'mediaProcess' }),
-          emfMetric('FileProcessingMs', 'p99', { Operation: 'mediaProcess' }),
+          msToSeconds(emfMetric('FileProcessingMs', 'p50', { FileType: 'image', Operation: 'mediaProcess' }), 'image p50'),
+          msToSeconds(emfMetric('FileProcessingMs', 'p99', { FileType: 'image', Operation: 'mediaProcess' }), 'image p99'),
+          msToSeconds(emfMetric('FileProcessingMs', 'p50', { FileType: 'video', Operation: 'mediaProcess' }), 'video p50'),
+          msToSeconds(emfMetric('FileProcessingMs', 'p99', { FileType: 'video', Operation: 'mediaProcess' }), 'video p99'),
         ],
-        leftYAxis: { label: 'ms' },
-        width: 6,
+        leftYAxis: { label: 's' },
+        width: 8,
         height: 6,
       }),
       new cloudwatch.GraphWidget({
         title: 'MediaProcess: File Sizes',
         left: [
-          emfMetric('FileSize', 'Average', { Operation: 'mediaProcess' }),
-          emfMetric('FileSize', 'Maximum', { Operation: 'mediaProcess' }),
+          emfMetric('FileSize', 'Average', { FileType: 'image', Operation: 'mediaProcess' }),
+          emfMetric('FileSize', 'Average', { FileType: 'video', Operation: 'mediaProcess' }),
         ],
         leftYAxis: { label: 'Bytes' },
-        width: 6,
-        height: 6,
-      }),
-      new cloudwatch.GraphWidget({
-        title: 'MediaProcess: By File Type',
-        left: [
-          emfMetric('FilesProcessed', 'Sum', { FileType: 'image' }),
-          emfMetric('FilesProcessed', 'Sum', { FileType: 'video' }),
-        ],
-        stacked: true,
-        width: 6,
+        width: 8,
         height: 6,
       }),
     );
 
-    // --- Triage Row 4: Video & Image Processing (EMF) ---
+    // --- Triage Row 4: Compression Latency + Ratio (dual-axis) ---
     triageDash.addWidgets(
       new cloudwatch.GraphWidget({
-        title: 'Video Compression Duration',
+        title: 'Video Compression: Latency + Ratio',
         left: [
-          emfMetric('VideoCompressionMs', 'p50'),
-          emfMetric('VideoCompressionMs', 'p99'),
+          msToSeconds(emfMetric('VideoCompressionMs', 'p50'), 'p50'),
+          msToSeconds(emfMetric('VideoCompressionMs', 'p99'), 'p99'),
         ],
-        leftYAxis: { label: 'ms' },
+        right: [emfMetric('VideoCompressionRatio', 'Average')],
+        leftYAxis: { label: 's' },
+        rightYAxis: { label: 'x' },
         width: 8,
         height: 6,
       }),
       new cloudwatch.GraphWidget({
-        title: 'Image Resize Duration',
+        title: 'Image Resize: Latency + Ratio',
         left: [
-          emfMetric('ImageResizeMs', 'p50'),
-          emfMetric('ImageResizeMs', 'p99'),
+          emfMetric('ImageResizeMs', 'p50', { FileType: 'image', Operation: 'mediaProcess' }),
+          emfMetric('ImageResizeMs', 'p99', { FileType: 'image', Operation: 'mediaProcess' }),
         ],
+        right: [emfMetric('ImageCompressionRatio', 'Average', { FileType: 'image', Operation: 'mediaProcess' })],
         leftYAxis: { label: 'ms' },
+        rightYAxis: { label: 'x' },
         width: 8,
         height: 6,
       }),
       new cloudwatch.GraphWidget({
-        title: 'Image Size After Resize',
+        title: 'Compression: Output Size',
         left: [
-          emfMetric('ImageSizeBytes', 'Average'),
-          emfMetric('ImageSizeBytes', 'Maximum'),
+          emfMetric('ImageSizeBytes', 'Average', { FileType: 'image', Operation: 'mediaProcess' }),
+          emfMetric('MediaFileSizeBytes', 'Average'),
         ],
         leftYAxis: { label: 'Bytes' },
         width: 8,
@@ -325,10 +324,10 @@ export class OperationsDashboardStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'Gemini Triage: API Latency',
         left: [
-          emfMetric('GeminiApiLatencyMs', 'p50', { Operation: 'triage' }),
-          emfMetric('GeminiApiLatencyMs', 'p99', { Operation: 'triage' }),
+          msToSeconds(emfMetric('GeminiApiLatencyMs', 'p50', { Operation: 'triage' }), 'p50'),
+          msToSeconds(emfMetric('GeminiApiLatencyMs', 'p99', { Operation: 'triage' }), 'p99'),
         ],
-        leftYAxis: { label: 'ms' },
+        leftYAxis: { label: 's' },
         width: 6,
         height: 6,
       }),
@@ -342,7 +341,7 @@ export class OperationsDashboardStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'Gemini Errors & Rate Limits',
         left: [
-          emfMetric('GeminiApiErrors', 'Sum'),
+          emfMetric('GeminiApiErrors', 'Sum', { Operation: 'triage' }),
           logMetric('RateLimitHits'),
         ],
         width: 6,
@@ -364,10 +363,10 @@ export class OperationsDashboardStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'TriageProcessor: Duration',
         left: [
-          triageProcessorFn.metricDuration({ period, statistic: 'p50' }),
-          triageProcessorFn.metricDuration({ period, statistic: 'p99' }),
+          msToSeconds(triageProcessorFn.metricDuration({ period, statistic: 'p50' }), 'p50'),
+          msToSeconds(triageProcessorFn.metricDuration({ period, statistic: 'p99' }), 'p99'),
         ],
-        leftYAxis: { label: 'ms' },
+        leftYAxis: { label: 's' },
         width: 8,
         height: 6,
       }),
@@ -442,8 +441,8 @@ export class OperationsDashboardStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'Triage Job Files',
         left: [
-          emfMetric('TriageJobFiles', 'Sum'),
-          emfMetric('TriageJobFiles', 'Average'),
+          emfMetric('JobFilesProcessed', 'Sum', { JobType: 'triage' }),
+          emfMetric('JobFilesProcessed', 'Average', { JobType: 'triage' }),
         ],
         width: 8,
         height: 6,
@@ -487,7 +486,6 @@ export class OperationsDashboardStack extends cdk.Stack {
         title: 'S3 Media Flow (EMF)',
         left: [
           emfMetric('MediaFileSizeBytes', 'Sum'),
-          emfMetric('GeminiFilesApiUploadBytes', 'Sum'),
         ],
         leftYAxis: { label: 'Bytes' },
         width: 8,
@@ -617,7 +615,8 @@ export class OperationsDashboardStack extends cdk.Stack {
           selectionProcessorFn.metricInvocations({ period }),
           selectionProcessorFn.metricErrors({ period }),
         ],
-        right: [selectionProcessorFn.metricDuration({ period, statistic: 'p99' })],
+        right: [msToSeconds(selectionProcessorFn.metricDuration({ period, statistic: 'p99' }), 'p99')],
+        rightYAxis: { label: 's' },
         width: 6,
         height: 6,
       }),
@@ -627,7 +626,8 @@ export class OperationsDashboardStack extends cdk.Stack {
           enhancementProcessorFn.metricInvocations({ period }),
           enhancementProcessorFn.metricErrors({ period }),
         ],
-        right: [enhancementProcessorFn.metricDuration({ period, statistic: 'p99' })],
+        right: [msToSeconds(enhancementProcessorFn.metricDuration({ period, statistic: 'p99' }), 'p99')],
+        rightYAxis: { label: 's' },
         width: 6,
         height: 6,
       }),
@@ -637,7 +637,8 @@ export class OperationsDashboardStack extends cdk.Stack {
           publishProcessorFn.metricInvocations({ period }),
           publishProcessorFn.metricErrors({ period }),
         ],
-        right: [publishProcessorFn.metricDuration({ period, statistic: 'p99' })],
+        right: [msToSeconds(publishProcessorFn.metricDuration({ period, statistic: 'p99' }), 'p99')],
+        rightYAxis: { label: 's' },
         width: 6,
         height: 6,
       }),
@@ -647,7 +648,8 @@ export class OperationsDashboardStack extends cdk.Stack {
           thumbnailProcessorFn.metricInvocations({ period }),
           thumbnailProcessorFn.metricErrors({ period }),
         ],
-        right: [thumbnailProcessorFn.metricDuration({ period, statistic: 'p99' })],
+        right: [msToSeconds(thumbnailProcessorFn.metricDuration({ period, statistic: 'p99' }), 'p99')],
+        rightYAxis: { label: 's' },
         width: 6,
         height: 6,
       }),
@@ -668,12 +670,12 @@ export class OperationsDashboardStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'Gemini Selection: API Latency',
         left: [
-          emfMetric('GeminiApiLatencyMs', 'p50', { Operation: 'mediaSelection' }),
-          emfMetric('GeminiApiLatencyMs', 'p99', { Operation: 'mediaSelection' }),
-          emfMetric('GeminiApiLatencyMs', 'p50', { Operation: 'jsonSelection' }),
-          emfMetric('GeminiApiLatencyMs', 'p99', { Operation: 'jsonSelection' }),
+          msToSeconds(emfMetric('GeminiApiLatencyMs', 'p50', { Operation: 'mediaSelection' }), 'media p50'),
+          msToSeconds(emfMetric('GeminiApiLatencyMs', 'p99', { Operation: 'mediaSelection' }), 'media p99'),
+          msToSeconds(emfMetric('GeminiApiLatencyMs', 'p50', { Operation: 'jsonSelection' }), 'json p50'),
+          msToSeconds(emfMetric('GeminiApiLatencyMs', 'p99', { Operation: 'jsonSelection' }), 'json p99'),
         ],
-        leftYAxis: { label: 'ms' },
+        leftYAxis: { label: 's' },
         width: 6,
         height: 6,
       }),
@@ -685,10 +687,10 @@ export class OperationsDashboardStack extends cdk.Stack {
         height: 6,
       }),
       new cloudwatch.GraphWidget({
-        title: 'Publish Attempts',
+        title: 'Gemini Selection Errors',
         left: [
-          emfMetric('PublishAttempts', 'Sum'),
           emfMetric('GeminiApiErrors', 'Sum', { Operation: 'jsonSelection' }),
+          emfMetric('GeminiApiErrors', 'Sum', { Operation: 'mediaSelection' }),
         ],
         width: 6,
         height: 6,
@@ -700,16 +702,16 @@ export class OperationsDashboardStack extends cdk.Stack {
       new cloudwatch.GraphWidget({
         title: 'Gemini Cache Hits vs Misses',
         left: [
-          emfMetric('GeminiCacheHits', 'Sum'),
-          emfMetric('GeminiCacheMisses', 'Sum'),
+          emfMetric('GeminiCacheHit', 'Sum', { Operation: 'jsonSelection' }),
+          emfMetric('GeminiCacheMiss', 'Sum', { Operation: 'jsonSelection' }),
         ],
         stacked: true,
         width: 8,
         height: 6,
       }),
       new cloudwatch.GraphWidget({
-        title: 'Gemini Cache Tokens Saved',
-        left: [emfMetric('GeminiCacheTokensSaved', 'Sum')],
+        title: 'Gemini Cached Tokens',
+        left: [emfMetric('GeminiCachedTokens', 'Sum', { Operation: 'jsonSelection' })],
         width: 8,
         height: 6,
       }),
@@ -921,8 +923,8 @@ export class OperationsDashboardStack extends cdk.Stack {
       }),
       new cloudwatch.GraphWidget({
         title: 'All Lambda Duration p99',
-        left: lambdas.map(({ fn }) => fn.metricDuration({ period, statistic: 'p99' })),
-        leftYAxis: { label: 'ms' },
+        left: lambdas.map(({ fn }) => msToSeconds(fn.metricDuration({ period, statistic: 'p99' }), fn.functionName)),
+        leftYAxis: { label: 's' },
         width: 8,
         height: 6,
       }),
