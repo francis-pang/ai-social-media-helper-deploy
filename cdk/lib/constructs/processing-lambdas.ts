@@ -238,7 +238,7 @@ export class ProcessingLambdas extends Construct {
     for (const fn of aiLambdas) {
       fn.addToRolePolicy(
         new iam.PolicyStatement({
-          actions: ['ssm:GetParameter'],
+          actions: ['ssm:GetParameter', 'ssm:GetParameters'],
           resources: [geminiKeyArn],
         }),
       );
