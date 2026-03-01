@@ -58,7 +58,6 @@ export class OperationsDashboardStack extends cdk.Stack {
     const triageProcessorFn = getLambda('TriageProcessor');
     const selectionProcessorFn = getLambda('SelectionProcessor');
     const enhancementProcessorFn = getLambda('EnhancementProcessor');
-    const videoProcessorFn = getLambda('VideoProcessor');
     const thumbnailProcessorFn = getLambda('ThumbnailProcessor');
     const publishProcessorFn = getLambda('PublishProcessor');
     const mediaProcessFn = getLambda('MediaProcessProcessor');
