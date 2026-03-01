@@ -24,7 +24,7 @@ export interface ProcessingLambdasProps {
 }
 
 /**
- * ProcessingLambdas creates all 9 Lambda functions and applies IAM permissions (DDR-035, DDR-053).
+ * ProcessingLambdas creates all 10 Lambda functions and applies IAM permissions (DDR-035, DDR-053, DDR-077).
  *
  * NOTE: This is a plain class (not a CDK Construct) to preserve CloudFormation
  * logical IDs. All resources are created with `scope` as their parent, keeping
@@ -41,6 +41,7 @@ export interface ProcessingLambdasProps {
  * - Selection: AI media selection (4 GB, 15 min)
  * - Enhancement: Per-photo AI editing + feedback (2 GB, 5 min)
  * - Video: Per-video ffmpeg enhancement (4 GB, 15 min)
+ * - GeminiBatchPoll: Gemini Batch API poller (128 MB, 10s, DDR-077)
  *
  * IAM follows least privilege (DDR-053):
  * - All Lambdas: S3 read/write/delete, DynamoDB CRUD
@@ -58,6 +59,7 @@ export class ProcessingLambdas extends Construct {
   public readonly selectionProcessor: lambda.DockerImageFunction;
   public readonly enhancementProcessor: lambda.DockerImageFunction;
   public readonly videoProcessor: lambda.DockerImageFunction;
+  public readonly geminiBatchPollProcessor: lambda.DockerImageFunction;
 
   constructor(scope: Construct, id: string, props: ProcessingLambdasProps) {
     super(scope, id);
@@ -80,11 +82,14 @@ export class ProcessingLambdas extends Construct {
         ? lambda.DockerImageCode.fromImageAsset(path.join(lambdaCodeRoot, localDir))
         : lambda.DockerImageCode.fromEcr(repo, { tagOrDigest: tag });
 
-    // Shared environment variables for Lambdas that need Gemini
+    // Shared environment variables for Lambdas that need Gemini (DDR-077: Vertex AI)
     const sharedEnv = {
       MEDIA_BUCKET_NAME: props.mediaBucket.bucketName,
       DYNAMO_TABLE_NAME: props.sessionsTable.tableName,
       SSM_API_KEY_PARAM: '/ai-social-media/prod/gemini-api-key',
+      VERTEX_AI_PROJECT: 'gen-lang-client-0436578028',
+      VERTEX_AI_REGION: 'us-east4',
+      SSM_GCP_SA_PARAM: '/ai-social-media/prod/vertex-ai-service-account',
     };
 
     // =====================================================================
@@ -148,11 +153,9 @@ export class ProcessingLambdas extends Construct {
       memorySize: 256,
       ephemeralStorageSize: cdk.Size.mebibytes(512),
       environment: {
-        MEDIA_BUCKET_NAME: props.mediaBucket.bucketName,
-        DYNAMO_TABLE_NAME: props.sessionsTable.tableName,
+        ...sharedEnv,
         SSM_INSTAGRAM_TOKEN_PARAM: '/ai-social-media/prod/instagram-access-token',
         SSM_INSTAGRAM_USER_ID_PARAM: '/ai-social-media/prod/instagram-user-id',
-        // No SSM_API_KEY_PARAM — publish-lambda has no Gemini deps
       },
     });
 
@@ -196,6 +199,16 @@ export class ProcessingLambdas extends Construct {
       environment: sharedEnv,
     });
 
+    // --- 10. GeminiBatchPoll Lambda (DDR-077: 128 MB, 10s, ECR Private light) ---
+    this.geminiBatchPollProcessor = createProcessingLambda(scope, 'GeminiBatchPollProcessor', {
+      description: 'Gemini Batch API poller — lightweight poller for batch operation status',
+      code: imageCode(props.lightEcrRepo, 'gemini-batch-poll-latest', 'gemini-batch-poll-lambda'),
+      timeout: cdk.Duration.seconds(10),
+      memorySize: 128,
+      ephemeralStorageSize: cdk.Size.mebibytes(512),
+      environment: sharedEnv,
+    });
+
     // =====================================================================
     // IAM Permissions (least privilege per Lambda — DDR-035, DDR-053)
     // =====================================================================
@@ -209,6 +222,7 @@ export class ProcessingLambdas extends Construct {
       this.selectionProcessor,
       this.enhancementProcessor,
       this.videoProcessor,
+      this.geminiBatchPollProcessor,
     ];
 
     // All Lambdas: S3 read/write/delete + DynamoDB CRUD
@@ -223,23 +237,26 @@ export class ProcessingLambdas extends Construct {
     // API Lambda: file processing table read (DDR-061 — reads per-file statuses for results endpoint)
     props.fileProcessingTable.grantReadData(this.apiHandler);
 
-    // AI Lambdas: SSM read for Gemini API key (DDR-053: not needed by download/publish)
+    // AI Lambdas: SSM read for Gemini API key + Vertex AI service account (DDR-053, DDR-077)
     const stack = cdk.Stack.of(scope);
     const geminiKeyArn = `arn:aws:ssm:${stack.region}:${stack.account}:parameter/ai-social-media/prod/gemini-api-key`;
+    const vertexSaArn = `arn:aws:ssm:${stack.region}:${stack.account}:parameter/ai-social-media/prod/vertex-ai-service-account`;
     const aiLambdas = [
       this.apiHandler,
       this.triageProcessor,
       this.descriptionProcessor,
+      this.publishProcessor,
       this.selectionProcessor,
       this.enhancementProcessor,
       this.videoProcessor,
       this.thumbnailProcessor,
+      this.geminiBatchPollProcessor,
     ];
     for (const fn of aiLambdas) {
       fn.addToRolePolicy(
         new iam.PolicyStatement({
           actions: ['ssm:GetParameter', 'ssm:GetParameters'],
-          resources: [geminiKeyArn],
+          resources: [geminiKeyArn, vertexSaArn],
         }),
       );
     }

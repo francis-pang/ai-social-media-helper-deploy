@@ -17,6 +17,8 @@ export interface StepFunctionsPipelinesProps {
   triageProcessor: lambda.IFunction;
   /** Publish Lambda for publish pipeline steps (DDR-052, DDR-053) */
   publishProcessor: lambda.IFunction;
+  /** Gemini Batch Poll Lambda for polling batch job status (DDR-077) */
+  geminiBatchPollProcessor: lambda.IFunction;
 }
 
 /**
@@ -27,12 +29,14 @@ export interface StepFunctionsPipelinesProps {
  * - EnhancementPipeline: Parallel(Map(photos) + Map(videos))
  * - TriagePipeline: Prepare -> [has videos?] -> poll Gemini -> Run (DDR-052)
  * - PublishPipeline: CreateContainers -> [has videos?] -> poll Instagram -> Finalize (DDR-052)
+ * - GeminiBatchPollPipeline: Wait -> Poll -> [done?] -> Succeed/Fail (DDR-077)
  */
 export class StepFunctionsPipelines extends Construct {
   public readonly selectionPipeline: sfn.StateMachine;
   public readonly enhancementPipeline: sfn.StateMachine;
   public readonly triagePipeline: sfn.StateMachine;
   public readonly publishPipeline: sfn.StateMachine;
+  public readonly geminiBatchPollPipeline: sfn.StateMachine;
 
   constructor(scope: Construct, id: string, props: StepFunctionsPipelinesProps) {
     super(scope, id);
@@ -272,6 +276,48 @@ export class StepFunctionsPipelines extends Construct {
       stateMachineName: 'AiSocialMediaPublishPipeline',
       comment: 'Create Instagram media containers, poll video processing status, then publish the post',
       definitionBody: sfn.DefinitionBody.fromChainable(publishCreateContainers.next(publishHasVideos)),
+      timeout: cdk.Duration.minutes(30),
+    });
+
+    // =====================================================================
+    // Gemini Batch Poll Pipeline (DDR-077)
+    // =====================================================================
+    // Wait 15s -> Poll batch status -> [SUCCEEDED|FAILED|loop]
+    // Input: { batch_job_id: string, workflow_type: string, session_id: string }
+    const geminiBatchWait = new sfn.Wait(this, 'GeminiBatchWait', {
+      time: sfn.WaitTime.duration(cdk.Duration.seconds(15)),
+    });
+
+    const geminiBatchCheck = new tasks.LambdaInvoke(this, 'GeminiBatchCheck', {
+      lambdaFunction: props.geminiBatchPollProcessor,
+      payload: sfn.TaskInput.fromObject({
+        'batch_job_id.$': '$.batch_job_id',
+      }),
+      resultPath: '$.poll_result',
+      retryOnServiceExceptions: true,
+    });
+    geminiBatchCheck.addRetry({
+      errors: ['States.ALL'],
+      maxAttempts: 2,
+      backoffRate: 2,
+    });
+
+    const geminiBatchComplete = new sfn.Succeed(this, 'GeminiBatchComplete');
+    const geminiBatchFailed = new sfn.Fail(this, 'GeminiBatchFailed', {
+      error: 'GeminiBatchFailed',
+    });
+
+    const geminiBatchIsDone = new sfn.Choice(this, 'GeminiBatchIsDone')
+      .when(sfn.Condition.stringEquals('$.poll_result.Payload.state', 'JOB_STATE_SUCCEEDED'), geminiBatchComplete)
+      .when(sfn.Condition.stringEquals('$.poll_result.Payload.state', 'JOB_STATE_FAILED'), geminiBatchFailed)
+      .otherwise(geminiBatchWait);
+
+    this.geminiBatchPollPipeline = new sfn.StateMachine(this, 'GeminiBatchPollPipeline', {
+      stateMachineName: 'AiSocialMediaGeminiBatchPollPipeline',
+      comment: 'Poll Gemini Batch API job status until complete or failed (DDR-077)',
+      definitionBody: sfn.DefinitionBody.fromChainable(
+        geminiBatchWait.next(geminiBatchCheck).next(geminiBatchIsDone),
+      ),
       timeout: cdk.Duration.minutes(30),
     });
   }

@@ -66,6 +66,7 @@ export class BackendStack extends cdk.Stack {
   public readonly selectionProcessor: lambda.Function;
   public readonly enhancementProcessor: lambda.Function;
   public readonly videoProcessor: lambda.Function;
+  public readonly geminiBatchPollProcessor: lambda.Function;
   public readonly mediaProcessProcessor: lambda.IFunction;
 
   // ECR repositories (from RegistryStack — DDR-046)
@@ -79,6 +80,7 @@ export class BackendStack extends cdk.Stack {
   public readonly enhancementPipeline: sfn.StateMachine;
   public readonly triagePipeline: sfn.StateMachine;
   public readonly publishPipeline: sfn.StateMachine;
+  public readonly geminiBatchPollPipeline: sfn.StateMachine;
 
   constructor(scope: Construct, id: string, props: BackendStackProps) {
     super(scope, id, props);
@@ -121,6 +123,7 @@ export class BackendStack extends cdk.Stack {
     this.selectionProcessor = lambdas.selectionProcessor;
     this.enhancementProcessor = lambdas.enhancementProcessor;
     this.videoProcessor = lambdas.videoProcessor;
+    this.geminiBatchPollProcessor = lambdas.geminiBatchPollProcessor;
     this.mediaProcessProcessor = props.mediaProcessProcessor;
 
     // =====================================================================
@@ -133,6 +136,7 @@ export class BackendStack extends cdk.Stack {
       videoProcessor: lambdas.videoProcessor,
       triageProcessor: lambdas.triageProcessor,
       publishProcessor: lambdas.publishProcessor,
+      geminiBatchPollProcessor: lambdas.geminiBatchPollProcessor,
     });
 
     // Re-export pipeline references for cross-stack access
@@ -140,6 +144,7 @@ export class BackendStack extends cdk.Stack {
     this.enhancementPipeline = pipelines.enhancementPipeline;
     this.triagePipeline = pipelines.triagePipeline;
     this.publishPipeline = pipelines.publishPipeline;
+    this.geminiBatchPollPipeline = pipelines.geminiBatchPollPipeline;
 
     // =====================================================================
     // 3. API Gateway + Cognito Auth
@@ -165,9 +170,24 @@ export class BackendStack extends cdk.Stack {
           pipelines.enhancementPipeline.stateMachineArn,
           pipelines.triagePipeline.stateMachineArn,
           pipelines.publishPipeline.stateMachineArn,
+          pipelines.geminiBatchPollPipeline.stateMachineArn,
         ],
       }),
     );
+
+    // Triage, Selection, Description: permission to start Gemini Batch Poll SFN
+    for (const fn of [
+      lambdas.triageProcessor,
+      lambdas.selectionProcessor,
+      lambdas.descriptionProcessor,
+    ]) {
+      fn.addToRolePolicy(
+        new iam.PolicyStatement({
+          actions: ['states:StartExecution'],
+          resources: [pipelines.geminiBatchPollPipeline.stateMachineArn],
+        }),
+      );
+    }
 
     // Inject state machine ARNs into API Lambda environment
     this.apiHandler.addEnvironment(
@@ -186,6 +206,10 @@ export class BackendStack extends cdk.Stack {
       'PUBLISH_STATE_MACHINE_ARN',
       pipelines.publishPipeline.stateMachineArn,
     );
+    this.apiHandler.addEnvironment(
+      'GEMINI_BATCH_POLL_SFN_ARN',
+      pipelines.geminiBatchPollPipeline.stateMachineArn,
+    );
 
     this.apiHandler.addEnvironment(
       'FILE_PROCESSING_TABLE_NAME',
@@ -194,6 +218,18 @@ export class BackendStack extends cdk.Stack {
     lambdas.triageProcessor.addEnvironment(
       'FILE_PROCESSING_TABLE_NAME',
       props.fileProcessingTable.tableName,
+    );
+    lambdas.triageProcessor.addEnvironment(
+      'GEMINI_BATCH_POLL_SFN_ARN',
+      pipelines.geminiBatchPollPipeline.stateMachineArn,
+    );
+    lambdas.selectionProcessor.addEnvironment(
+      'GEMINI_BATCH_POLL_SFN_ARN',
+      pipelines.geminiBatchPollPipeline.stateMachineArn,
+    );
+    lambdas.descriptionProcessor.addEnvironment(
+      'GEMINI_BATCH_POLL_SFN_ARN',
+      pipelines.geminiBatchPollPipeline.stateMachineArn,
     );
 
     // Inject domain-specific Lambda ARNs for async dispatch (DDR-053)
@@ -280,6 +316,11 @@ export class BackendStack extends cdk.Stack {
     new cdk.CfnOutput(this, 'PublishPipelineArn', {
       value: pipelines.publishPipeline.stateMachineArn,
       description: 'Publish Pipeline Step Functions ARN (DDR-052)',
+    });
+
+    new cdk.CfnOutput(this, 'GeminiBatchPollPipelineArn', {
+      value: pipelines.geminiBatchPollPipeline.stateMachineArn,
+      description: 'Gemini Batch Poll Pipeline Step Functions ARN (DDR-077)',
     });
 
     new cdk.CfnOutput(this, 'UserPoolId', {
