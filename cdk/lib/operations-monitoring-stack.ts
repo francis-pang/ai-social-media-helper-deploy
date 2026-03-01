@@ -130,20 +130,14 @@ export class OperationsMonitoringStack extends cdk.Stack {
       debugFilter.node.addDependency(cwLogsPolicy);
 
       // --- Metric Filters ---
+      // AppLogErrors and ColdStarts/RateLimitHits/TimeoutErrors are used in the dashboard.
+      // FatalFilter (CriticalErrors-{id}) and AuthFilter (AuthFailures) were removed:
+      // neither is referenced in any alarm or dashboard widget.
       new logs.MetricFilter(this, `ErrorFilter-${id}`, {
         logGroup,
         filterPattern: logs.FilterPattern.stringValue('$.level', '=', 'error'),
         metricNamespace,
         metricName: `AppLogErrors-${id}`,
-        metricValue: '1',
-        defaultValue: 0,
-      });
-
-      new logs.MetricFilter(this, `FatalFilter-${id}`, {
-        logGroup,
-        filterPattern: logs.FilterPattern.stringValue('$.level', '=', 'fatal'),
-        metricNamespace,
-        metricName: `CriticalErrors-${id}`,
         metricValue: '1',
         defaultValue: 0,
       });
@@ -162,15 +156,6 @@ export class OperationsMonitoringStack extends cdk.Stack {
         filterPattern: logs.FilterPattern.anyTerm('timeout', 'deadline exceeded'),
         metricNamespace,
         metricName: 'TimeoutErrors',
-        metricValue: '1',
-        defaultValue: 0,
-      });
-
-      new logs.MetricFilter(this, `AuthFilter-${id}`, {
-        logGroup,
-        filterPattern: logs.FilterPattern.anyTerm('authentication failed', 'unauthorized', 'forbidden'),
-        metricNamespace,
-        metricName: 'AuthFailures',
         metricValue: '1',
         defaultValue: 0,
       });

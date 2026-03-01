@@ -36,11 +36,10 @@ export class FrontendStack extends cdk.Stack {
     // API endpoint from SSM (not a secret — written by BackendStack).
     const apiEndpoint = ssm.StringParameter.valueForStringParameter(
       this, '/ai-social-media/api-endpoint');
-    // Origin-verify secret from Secrets Manager (Risk 5: crypto random, encrypted at rest).
-    // Use SecretValue.secretsManager() to resolve by name — fromSecretNameV2 generates a
-    // partial ARN that CloudFormation's dynamic reference resolver can't find.
-    const originVerifySecret = cdk.SecretValue.secretsManager(
-      'ai-social-media/origin-verify-secret').unsafeUnwrap();
+    // Origin-verify secret from SSM Parameter Store (Risk 5: migrated from Secrets Manager
+    // to SSM Standard tier to save $0.40/month; static value, no rotation required).
+    const originVerifySecret = ssm.StringParameter.valueForStringParameter(
+      this, '/ai-social-media/origin-verify-secret');
 
     // Import bucket by name — avoids cross-stack OAC cycle (DDR-045)
     // The bucket is created in StorageStack with autoDeleteObjects: true.
@@ -122,6 +121,9 @@ export class FrontendStack extends cdk.Stack {
       comment: 'AI Social Media Helper — Preact SPA frontend + /api/* proxy to API Gateway',
       minimumProtocolVersion: cloudfront.SecurityPolicyProtocol.TLS_V1_2_2021,
       publishAdditionalMetrics: true,
+      // WAF WebACL auto-created by CloudFront when publishAdditionalMetrics pricing plan was enabled.
+      // Must be kept in sync to prevent CloudFormation from removing it on stack updates.
+      webAclId: 'arn:aws:wafv2:us-east-1:681565534940:global/webacl/CreatedByCloudFront-6e9167bd/9e619ac2-b9c7-4901-8605-ad4432367471',
       defaultBehavior: {
         origin: s3Origin,
         viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,

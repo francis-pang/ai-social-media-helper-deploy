@@ -215,12 +215,14 @@ export class StorageStack extends cdk.Stack {
             id: 'metrics-tiering',
             transitions: [
               {
-                storageClass: s3.StorageClass.ONE_ZONE_INFREQUENT_ACCESS,
-                transitionAfter: cdk.Duration.days(90),
+                // Glacier Instant Retrieval from day 0 — cheaper than S3 Standard,
+                // still instantly accessible for ad-hoc queries.
+                storageClass: s3.StorageClass.GLACIER_INSTANT_RETRIEVAL,
+                transitionAfter: cdk.Duration.days(0),
               },
               {
                 storageClass: s3.StorageClass.DEEP_ARCHIVE,
-                transitionAfter: cdk.Duration.days(365),
+                transitionAfter: cdk.Duration.days(90),
               },
             ],
           },
