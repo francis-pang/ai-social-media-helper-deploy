@@ -224,6 +224,7 @@ export class OperationsMonitoringStack extends cdk.Stack {
     // Tags property in CloudFormation, so cdk.Tags.of(app) cannot reach them).
     // AwsCustomResource calls glue:TagResource via SDK at deploy time instead.
     // =========================================================================
+    const glueCatalogArn = `arn:${this.partition}:glue:${this.region}:${this.account}:catalog`;
     const glueDbArn = `arn:${this.partition}:glue:${this.region}:${this.account}:database/ai_social_media_logs`;
     const tagGlueDb = new cr.AwsCustomResource(this, 'TagGlueDatabase', {
       onCreate: {
@@ -239,6 +240,10 @@ export class OperationsMonitoringStack extends cdk.Stack {
         new iam.PolicyStatement({
           actions: ['glue:TagResource'],
           resources: [glueDbArn],
+        }),
+        new iam.PolicyStatement({
+          actions: ['glue:GetDatabase'],
+          resources: [glueCatalogArn, glueDbArn],
         }),
       ]),
     });
@@ -259,6 +264,10 @@ export class OperationsMonitoringStack extends cdk.Stack {
         new iam.PolicyStatement({
           actions: ['glue:TagResource'],
           resources: [glueTableArn],
+        }),
+        new iam.PolicyStatement({
+          actions: ['glue:GetTable'],
+          resources: [glueCatalogArn, glueDbArn, glueTableArn],
         }),
       ]),
     });
