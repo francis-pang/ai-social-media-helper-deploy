@@ -250,6 +250,8 @@ export class ProcessingLambdas extends Construct {
     props.fileProcessingTable.grantReadWriteData(this.triageProcessor);
     // API Lambda: file processing table read (DDR-061 — reads per-file statuses for results endpoint)
     props.fileProcessingTable.grantReadData(this.apiHandler);
+    // FB Prep Lambda: file processing table read (DDR-083 — reads session-scoped FileResult for processedKey/thumbnailKey)
+    props.fileProcessingTable.grantReadData(this.fbPrepProcessor);
 
     // AI Lambdas: SSM read for Gemini API key + Vertex AI service account (DDR-053, DDR-077)
     const stack = cdk.Stack.of(scope);

@@ -229,6 +229,10 @@ export class BackendStack extends cdk.Stack {
       'FILE_PROCESSING_TABLE_NAME',
       props.fileProcessingTable.tableName,
     );
+    lambdas.fbPrepProcessor.addEnvironment(
+      'FILE_PROCESSING_TABLE_NAME',
+      props.fileProcessingTable.tableName,
+    );
     lambdas.triageProcessor.addEnvironment(
       'GEMINI_BATCH_POLL_SFN_ARN',
       pipelines.geminiBatchPollPipeline.stateMachineArn,
