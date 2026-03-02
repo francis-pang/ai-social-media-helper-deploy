@@ -44,7 +44,7 @@ export function createBackendBuildProject(
     description: 'Build 11 Lambda Docker images (8 ECR Private + 3 ECR Public) with conditional rebuild detection',
     environment: {
       buildImage: codebuild.LinuxArmBuildImage.AMAZON_LINUX_2023_STANDARD_3_0,
-      computeType: codebuild.ComputeType.MEDIUM,
+      computeType: codebuild.ComputeType.LARGE,
       privileged: true, // Required for Docker-in-Docker
     },
     cache: codebuild.Cache.local(codebuild.LocalCacheMode.DOCKER_LAYER, codebuild.LocalCacheMode.CUSTOM),
