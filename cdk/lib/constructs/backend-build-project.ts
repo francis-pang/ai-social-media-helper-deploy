@@ -145,7 +145,10 @@ export function createBackendBuildProject(
             // expansion in the heredoc itself — variables expand at runtime when bash
             // executes the script, reading exported env vars from earlier command entries.
 
-            // Wave 1: Light images (api, triage, desc, download, publish)
+            // Wave 1: Light images (api, triage, desc, download) — 4 parallel builds.
+            // Intentionally split from the original 7-image wave to avoid OOM:
+            // 7 concurrent Go cross-compilations exhausted 16 GB RAM on the LARGE instance.
+            // Wave 1 warms the BuildKit Go cache; Wave 2 reuses it with far fewer cache misses.
             [
               "cat > /tmp/wave1.sh <<'ENDWAVE1'",
               'set -uo pipefail',
@@ -165,18 +168,39 @@ export function createBackendBuildProject(
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_TRIAGE" = "true" ]) && (build_image triage-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:triage-$COMMIT -t $PRIVATE_LIGHT_URI:triage-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-triage) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DESC" = "true" ]) && (build_image description-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:desc-$COMMIT -t $PRIVATE_LIGHT_URI:desc-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-desc) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DOWNLOAD" = "true" ]) && (build_image download-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:download-$COMMIT -t $PRIVATE_LIGHT_URI:download-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-download) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_PUBLISH" = "true" ]) && (build_image publish-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:publish-$COMMIT -t $PRIVATE_LIGHT_URI:publish-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-publish) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_GEMINI_BATCH_POLL" = "true" ]) && (build_image gemini-batch-poll Dockerfile.light "-t $PRIVATE_LIGHT_URI:gemini-batch-poll-$COMMIT -t $PRIVATE_LIGHT_URI:gemini-batch-poll-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-gemini-batch-poll) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_FB_PREP" = "true" ]) && (build_image fb-prep-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:fb-prep-$COMMIT -t $PRIVATE_LIGHT_URI:fb-prep-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-fb-prep) &',
               'wait; echo ">>> Wave 1 done: $(date -u +%H:%M:%S)"',
               'ENDWAVE1',
             ].join('\n'),
             'echo "--- wave1.sh ---"; cat /tmp/wave1.sh; echo "--- end ---"; bash /tmp/wave1.sh',
-            // Wave 2: Light images (enhance, webhook, oauth) — same build_image + tracing
+            // Wave 2: Light images (publish, gemini-batch-poll, fb-prep) — 3 parallel builds.
+            // Runs after Wave 1 to reuse the warmed BuildKit Go cache and avoid OOM.
             [
               "cat > /tmp/wave2.sh <<'ENDWAVE2'",
               'set -uo pipefail',
               'echo ">>> Wave 2 start: $(date -u +%H:%M:%S) | BUILD_ALL=$BUILD_ALL"',
+              'build_image() {',
+              '  set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"',
+              '  echo ">>> [$cmd] START $(date -u +%H:%M:%S) — dockerfile=build/$df"',
+              '  echo ">>> [$cmd] tags: $tags"',
+              '  echo ">>> [$cmd] cache-from: $cache"',
+              '  local start_ts=$(date +%s)',
+              '  docker build --provenance=false --progress=plain --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "build/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"',
+              '  local rc=$?; local elapsed=$(( $(date +%s) - start_ts ))',
+              '  echo ">>> [$cmd] DONE rc=$rc elapsed=${elapsed}s $(date -u +%H:%M:%S)"',
+              '  return $rc',
+              '}',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_PUBLISH" = "true" ]) && (build_image publish-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:publish-$COMMIT -t $PRIVATE_LIGHT_URI:publish-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-publish) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_GEMINI_BATCH_POLL" = "true" ]) && (build_image gemini-batch-poll Dockerfile.light "-t $PRIVATE_LIGHT_URI:gemini-batch-poll-$COMMIT -t $PRIVATE_LIGHT_URI:gemini-batch-poll-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-gemini-batch-poll) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_FB_PREP" = "true" ]) && (build_image fb-prep-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:fb-prep-$COMMIT -t $PRIVATE_LIGHT_URI:fb-prep-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-fb-prep) &',
+              'wait; echo ">>> Wave 2 done: $(date -u +%H:%M:%S)"',
+              'ENDWAVE2',
+            ].join('\n'),
+            'echo "--- wave2.sh ---"; cat /tmp/wave2.sh; echo "--- end ---"; bash /tmp/wave2.sh',
+            // Wave 3: Light images (enhance, webhook, oauth) — same build_image + tracing
+            [
+              "cat > /tmp/wave3.sh <<'ENDWAVE3'",
+              'set -uo pipefail',
+              'echo ">>> Wave 3 start: $(date -u +%H:%M:%S) | BUILD_ALL=$BUILD_ALL"',
               'build_image() {',
               '  set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"',
               '  echo ">>> [$cmd] START $(date -u +%H:%M:%S) — dockerfile=build/$df"',
@@ -191,15 +215,15 @@ export function createBackendBuildProject(
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_ENHANCE" = "true" ]) && (build_image enhance-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-enhance) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_WEBHOOK" = "true" ]) && (build_image webhook Dockerfile.light "-t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest" "$PRIVATE_WEBHOOK_URI:webhook-latest" && touch /tmp/built-webhook) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_OAUTH" = "true" ]) && (build_image oauth Dockerfile.light "-t $PRIVATE_OAUTH_URI:oauth-$COMMIT -t $PRIVATE_OAUTH_URI:oauth-latest" "$PRIVATE_OAUTH_URI:oauth-latest" && touch /tmp/built-oauth) &',
-              'wait; echo ">>> Wave 2 done: $(date -u +%H:%M:%S)"',
-              'ENDWAVE2',
+              'wait; echo ">>> Wave 3 done: $(date -u +%H:%M:%S)"',
+              'ENDWAVE3',
             ].join('\n'),
-            'echo "--- wave2.sh ---"; cat /tmp/wave2.sh; echo "--- end ---"; bash /tmp/wave2.sh',
-            // Wave 3: Heavy images (thumb, select, video, mediaprocess) — same build_image + tracing
+            'echo "--- wave3.sh ---"; cat /tmp/wave3.sh; echo "--- end ---"; bash /tmp/wave3.sh',
+            // Wave 4: Heavy images (thumb, select, video, mediaprocess) — same build_image + tracing
             [
-              "cat > /tmp/wave3.sh <<'ENDWAVE3'",
+              "cat > /tmp/wave4.sh <<'ENDWAVE4'",
               'set -uo pipefail',
-              'echo ">>> Wave 3 start: $(date -u +%H:%M:%S) | BUILD_ALL=$BUILD_ALL"',
+              'echo ">>> Wave 4 start: $(date -u +%H:%M:%S) | BUILD_ALL=$BUILD_ALL"',
               'build_image() {',
               '  set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"',
               '  echo ">>> [$cmd] START $(date -u +%H:%M:%S) — dockerfile=build/$df"',
@@ -216,10 +240,10 @@ export function createBackendBuildProject(
               // Risk 37: App-specific images only go to private repos.
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_VIDEO" = "true" ]) && (build_image video-worker Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-video) &',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_MEDIAPROCESS" = "true" ]) && (build_image media-process Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:mediaprocess-$COMMIT -t $PRIVATE_HEAVY_URI:mediaprocess-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-mediaprocess) &',
-              'wait; echo ">>> Wave 3 done: $(date -u +%H:%M:%S)"',
-              'ENDWAVE3',
+              'wait; echo ">>> Wave 4 done: $(date -u +%H:%M:%S)"',
+              'ENDWAVE4',
             ].join('\n'),
-            'echo "--- wave3.sh ---"; cat /tmp/wave3.sh; echo "--- end ---"; bash /tmp/wave3.sh',
+            'echo "--- wave4.sh ---"; cat /tmp/wave4.sh; echo "--- end ---"; bash /tmp/wave4.sh',
             'echo "=== Build summary ==="; for img in api triage desc download publish enhance gemini-batch-poll fb-prep webhook oauth thumb select video mediaprocess; do [ -f /tmp/built-$img ] && echo "  $img: BUILT" || echo "  $img: SKIPPED (unchanged)"; done',
           ],
         },
