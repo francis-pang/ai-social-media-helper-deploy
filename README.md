@@ -104,6 +104,40 @@ make synth
 npm test
 ```
 
+## CI/CD Automation
+
+The GitHub Actions workflow `deploy-cdk.yml` runs on every push to `main` that touches `cdk/` files (or the workflow itself). It automatically detects which deploy target(s) to use based on changed files — no more silent misses.
+
+### Auto-Detection: File → Target Mapping
+
+On push, the workflow uses the GitHub API to compare the pushed commit against its parent and maps each changed file to its owning deploy target:
+
+| Changed File(s) | Deploy Target |
+| --- | --- |
+| `lib/backend-stack.ts`, `lib/storage-stack.ts`, `lib/registry-stack.ts`, `lib/webhook-stack.ts` | `core` |
+| `lib/constructs/api-gateway.ts`, `lambda-factory.ts`, `processing-lambdas.ts`, `step-functions-pipelines.ts` | `core` |
+| `lib/backend-pipeline-stack.ts`, `lib/frontend-pipeline-stack.ts` | `pipelines` |
+| `lib/constructs/backend-build-project.ts`, `backend-deploy-project.ts` | `pipelines` |
+| `lib/frontend-stack.ts` | `edge` |
+| `lib/operations-alert-stack.ts`, `operations-monitoring-stack.ts`, `operations-dashboard-stack.ts` | `observability` |
+| `bin/cdk.ts`, `package.json`, `package-lock.json`, `tsconfig.json` | `full` |
+| `lib/rag-stack.ts` | *(skipped — manual dispatch only)* |
+| `.github/workflows/deploy-cdk.yml` only | `core` (sanity check fallback) |
+
+When a commit spans multiple targets (e.g., `backend-stack.ts` + `backend-build-project.ts`), all affected targets deploy in dependency order: `core → pipelines → edge → observability`.
+
+If changed files cannot be determined (first push, API failure), the workflow falls back to `full`.
+
+### Manual Dispatch
+
+Use `workflow_dispatch` to deploy a specific target manually:
+
+```
+core | full | rag | pipelines | edge | observability
+```
+
+The `rag` target (Aurora Serverless v2) is never auto-deployed — it requires explicit manual dispatch.
+
 ## Notes
 
 - Pipeline source actions are configured against `francis-pang/ai-social-media-helper` on branch `main`.
