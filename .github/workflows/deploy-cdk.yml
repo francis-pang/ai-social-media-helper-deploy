@@ -12,6 +12,7 @@ on:
     paths:
       - 'cdk/**'
       - '!cdk/README.md'
+      - '.github/workflows/deploy-cdk.yml'
   workflow_dispatch:
     inputs:
       deploy_target:
@@ -101,66 +102,204 @@ jobs:
       - name: CDK Diff
         run: npx cdk diff --all 2>&1 || true
 
+      - name: Detect deploy targets
+        id: detect
+        # For workflow_dispatch: use the manually chosen target.
+        # For push: use the GitHub API compare endpoint to get changed files,
+        # then map them to deploy targets. This avoids git history issues
+        # (merge commits, shallow clones, force pushes).
+        #
+        # File → target mapping (derived from CDK stack imports):
+        #   bin/cdk.ts, package.json, package-lock.json, tsconfig.json  → full
+        #   lib/backend-pipeline-stack.ts                               → pipelines
+        #   lib/frontend-pipeline-stack.ts                              → pipelines
+        #   lib/constructs/backend-build-project.ts                     → pipelines
+        #   lib/constructs/backend-deploy-project.ts                    → pipelines
+        #   lib/frontend-stack.ts                                       → edge
+        #   lib/operations-alert-stack.ts                               → observability
+        #   lib/operations-monitoring-stack.ts                          → observability
+        #   lib/operations-dashboard-stack.ts                           → observability
+        #   lib/rag-stack.ts                                            → (skip, manual only)
+        #   lib/backend-stack.ts, lib/storage-stack.ts, etc.            → core
+        #   lib/constructs/api-gateway.ts, lambda-factory.ts, etc.      → core
+        #   .github/workflows/deploy-cdk.yml (workflow-only change)     → core (sanity check)
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "targets=${{ github.event.inputs.deploy_target }}" >> "$GITHUB_OUTPUT"
+            echo "Targets (manual): ${{ github.event.inputs.deploy_target }}"
+            exit 0
+          fi
+
+          BEFORE="${{ github.event.before }}"
+          AFTER="${{ github.sha }}"
+
+          # Use GitHub API to get changed files — works for merge commits, squash
+          # merges, and force pushes without needing git history depth.
+          CHANGED=$(curl -s \
+            -H "Authorization: Bearer ${{ github.token }}" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/${{ github.repository }}/compare/${BEFORE}...${AFTER}" \
+            | jq -r '.files[].filename // empty' 2>/dev/null || echo "")
+
+          # Fallback: if the API returned nothing (e.g., first push, before=0000...),
+          # deploy full to be safe.
+          if [ -z "$CHANGED" ]; then
+            echo "::warning::Could not determine changed files (before=$BEFORE) — deploying full"
+            echo "targets=full" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Changed files:"
+          echo "$CHANGED"
+          echo ""
+
+          NEEDS_CORE=false
+          NEEDS_PIPELINES=false
+          NEEDS_EDGE=false
+          NEEDS_OBS=false
+          NEEDS_FULL=false
+
+          while IFS= read -r file; do
+            [ -z "$file" ] && continue
+            case "$file" in
+              # Infra-wide: bin/cdk.ts instantiates all stacks; package files affect everything
+              cdk/bin/cdk.ts|cdk/package.json|cdk/package-lock.json|cdk/tsconfig.json)
+                NEEDS_FULL=true ;;
+
+              # Pipeline stacks and their constructs
+              cdk/lib/backend-pipeline-stack.ts|\
+              cdk/lib/frontend-pipeline-stack.ts|\
+              cdk/lib/constructs/backend-build-project.ts|\
+              cdk/lib/constructs/backend-deploy-project.ts)
+                NEEDS_PIPELINES=true ;;
+
+              # Frontend CloudFront stack
+              cdk/lib/frontend-stack.ts)
+                NEEDS_EDGE=true ;;
+
+              # Observability stacks (alert exports NamedLambda used by monitoring+dashboard)
+              cdk/lib/operations-alert-stack.ts|\
+              cdk/lib/operations-monitoring-stack.ts|\
+              cdk/lib/operations-dashboard-stack.ts)
+                NEEDS_OBS=true ;;
+
+              # Rag stack: manual only, never auto-deployed
+              cdk/lib/rag-stack.ts)
+                echo "::notice::rag-stack.ts changed — skipping (requires manual dispatch with target=rag)"
+                ;;
+
+              # Core stacks and their constructs
+              cdk/lib/backend-stack.ts|\
+              cdk/lib/storage-stack.ts|\
+              cdk/lib/registry-stack.ts|\
+              cdk/lib/webhook-stack.ts|\
+              cdk/lib/constructs/api-gateway.ts|\
+              cdk/lib/constructs/lambda-factory.ts|\
+              cdk/lib/constructs/processing-lambdas.ts|\
+              cdk/lib/constructs/step-functions-pipelines.ts)
+                NEEDS_CORE=true ;;
+
+              # Anything else under cdk/ that isn't .d.ts or .js (e.g. scripts, tests)
+              cdk/*)
+                NEEDS_CORE=true ;;
+            esac
+          done <<< "$CHANGED"
+
+          # full supersedes everything else
+          if [ "$NEEDS_FULL" = true ]; then
+            echo "Detected targets: [full] (infra-wide change)"
+            echo "targets=full" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Assemble in dependency order
+          TARGETS=""
+          [ "$NEEDS_CORE" = true ]      && TARGETS="$TARGETS core"
+          [ "$NEEDS_PIPELINES" = true ] && TARGETS="$TARGETS pipelines"
+          [ "$NEEDS_EDGE" = true ]      && TARGETS="$TARGETS edge"
+          [ "$NEEDS_OBS" = true ]       && TARGETS="$TARGETS observability"
+
+          TARGETS=$(echo "$TARGETS" | xargs)
+
+          # Fallback: if only non-cdk files changed (e.g., .github/workflows/deploy-cdk.yml),
+          # deploy core as a sanity check.
+          [ -z "$TARGETS" ] && TARGETS="core"
+
+          echo "Detected targets: [$TARGETS]"
+          echo "targets=$TARGETS" >> "$GITHUB_OUTPUT"
+        working-directory: .
+
       - name: CDK Deploy
         env:
           CODESTAR_CONNECTION_ARN: ${{ secrets.CODESTAR_CONNECTION_ARN }}
+          TARGETS: ${{ steps.detect.outputs.targets }}
         run: |
-          # Determine deploy target
-          TARGET="${{ github.event.inputs.deploy_target || 'core' }}"
+          deploy_target() {
+            local T=$1
+            echo ""
+            echo "============================================"
+            echo "  Deploying target: $T"
+            echo "============================================"
+            case "$T" in
+              core)
+                # DDR-047: Deploy order — Storage → Registry → Backend → Webhook → Alerts
+                # OperationsAlert included because it has cross-stack references to Backend
+                # resources; deploying Backend alone would fail if Alert's references changed.
+                npx cdk deploy \
+                  AiSocialMediaStorage \
+                  AiSocialMediaRegistry \
+                  AiSocialMediaBackend \
+                  AiSocialMediaWebhook \
+                  AiSocialMediaOperationsAlert \
+                  --method=direct --require-approval=never --concurrency 2
+                ;;
+              full)
+                # DDR-045/047: Full ordered deploy
+                npx cdk deploy --all --method=direct --require-approval=never --concurrency 5
+                ;;
+              rag)
+                # DDR-066: RAG stack requires explicit deployment (Aurora Serverless v2)
+                npx cdk deploy AiSocialMediaRag \
+                  --method=direct --require-approval=never
+                ;;
+              pipelines)
+                # Uses CODESTAR_CONNECTION_ARN secret if set, else SSM /ai-social-media/codestar-connection-arn
+                npx cdk deploy \
+                  AiSocialMediaBackendPipeline \
+                  AiSocialMediaFrontendPipeline \
+                  --method=direct --require-approval=never --concurrency 2
+                ;;
+              edge)
+                npx cdk deploy AiSocialMediaFrontend \
+                  --method=direct --require-approval=never
+                ;;
+              observability)
+                npx cdk deploy \
+                  AiSocialMediaOperationsAlert \
+                  AiSocialMediaOperationsMonitoring \
+                  AiSocialMediaOperationsDashboard \
+                  --method=direct --require-approval=never --concurrency 3
+                ;;
+              *)
+                echo "::error::Unknown deploy target: $T"
+                exit 1
+                ;;
+            esac
+          }
 
-          echo "Deploy target: $TARGET"
-
-          case "$TARGET" in
-            core)
-              # DDR-047: Deploy order — Storage → Registry → Backend → Webhook → Alerts
-              # OperationsAlert included because it has cross-stack references to Backend
-              # resources; deploying Backend alone would fail if Alert's references changed.
-              npx cdk deploy \
-                AiSocialMediaStorage \
-                AiSocialMediaRegistry \
-                AiSocialMediaBackend \
-                AiSocialMediaWebhook \
-                AiSocialMediaOperationsAlert \
-                --method=direct --require-approval=never --concurrency 2
-              ;;
-            full)
-              # DDR-045/047: Full ordered deploy
-              npx cdk deploy --all --method=direct --require-approval=never --concurrency 5
-              ;;
-            rag)
-              # DDR-066: RAG stack requires explicit deployment (Aurora Serverless v2)
-              npx cdk deploy AiSocialMediaRag \
-                --method=direct --require-approval=never
-              ;;
-            pipelines)
-              # Uses CODESTAR_CONNECTION_ARN secret if set, else SSM /ai-social-media/codestar-connection-arn
-              npx cdk deploy \
-                AiSocialMediaBackendPipeline \
-                AiSocialMediaFrontendPipeline \
-                --method=direct --require-approval=never --concurrency 2
-              ;;
-            edge)
-              npx cdk deploy AiSocialMediaFrontend \
-                --method=direct --require-approval=never
-              ;;
-            observability)
-              npx cdk deploy \
-                AiSocialMediaOperationsAlert \
-                AiSocialMediaOperationsMonitoring \
-                AiSocialMediaOperationsDashboard \
-                --method=direct --require-approval=never --concurrency 3
-              ;;
-          esac
+          for T in $TARGETS; do
+            deploy_target "$T"
+          done
 
       - name: Summary
         if: always()
         run: |
-          TARGET="${{ github.event.inputs.deploy_target || 'core' }}"
           echo "## CDK Deploy Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Property | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|----------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **Target** | $TARGET |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Targets** | ${{ steps.detect.outputs.targets }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| **Commit** | ${{ github.sha }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| **Region** | ${{ env.AWS_REGION }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| **Status** | ${{ job.status }} |" >> "$GITHUB_STEP_SUMMARY"
+        working-directory: .
