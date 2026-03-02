@@ -375,6 +375,25 @@ export class StepFunctionsPipelines extends Construct {
       backoffRate: 2,
     });
 
+    // Catch handler: if GeminiBatchPollPipeline fails, mark the job as error in DynamoDB
+    // so the frontend stops polling and shows an actionable error (DDR-085).
+    const fbPrepFail = new sfn.Fail(this, 'FBPrepFail', {
+      error: 'BatchPollFailed',
+      cause: 'Gemini batch poll pipeline failed; job marked as error in DynamoDB',
+    });
+    const markBatchError = new tasks.LambdaInvoke(this, 'MarkBatchError', {
+      lambdaFunction: props.fbPrepProcessor,
+      payload: sfn.TaskInput.fromObject({
+        type: 'fb-prep-mark-error',
+        'sessionId.$': '$.sessionId',
+        'jobId.$': '$.jobId',
+      }),
+      resultPath: sfn.JsonPath.DISCARD,
+    });
+    startGeminiBatchPoll.addCatch(markBatchError.next(fbPrepFail), {
+      resultPath: '$.batchError',
+    });
+
     const fbPrepIsBatch = new sfn.Choice(this, 'FBPrepIsBatch')
       .when(
         sfn.Condition.isPresent('$.prep_result.Payload.batch_job_id'),
