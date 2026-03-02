@@ -91,7 +91,7 @@ export class ProcessingLambdas extends Construct {
       DYNAMO_TABLE_NAME: props.sessionsTable.tableName,
       SSM_API_KEY_PARAM: '/ai-social-media/prod/gemini-api-key',
       VERTEX_AI_PROJECT: 'gen-lang-client-0436578028',
-      VERTEX_AI_REGION: 'us-east4',
+      VERTEX_AI_REGION: 'global',
       SSM_GCP_SA_PARAM: '/ai-social-media/prod/vertex-ai-service-account',
       GCS_BATCH_BUCKET: 'social-media-ai-app-bucket',
     };
