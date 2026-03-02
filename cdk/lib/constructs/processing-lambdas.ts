@@ -93,7 +93,7 @@ export class ProcessingLambdas extends Construct {
       VERTEX_AI_PROJECT: 'gen-lang-client-0436578028',
       VERTEX_AI_REGION: 'us-east4',
       SSM_GCP_SA_PARAM: '/ai-social-media/prod/vertex-ai-service-account',
-      GCS_BATCH_BUCKET: 'ai-social-media-batch-temp',
+      GCS_BATCH_BUCKET: 'social-media-ai-app-bucket',
     };
 
     // =====================================================================
