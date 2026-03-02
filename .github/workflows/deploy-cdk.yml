@@ -80,8 +80,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 2  # Need parent commit to compute diff on push
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -103,140 +101,66 @@ jobs:
       - name: CDK Diff
         run: npx cdk diff --all 2>&1 || true
 
-      - name: Detect deploy targets
-        id: detect
-        # For workflow_dispatch: use the manually chosen target.
-        # For push: inspect changed files and select every affected target.
-        # Ordering: core → pipelines → edge → observability (dependency order).
-        #
-        # File → target mapping:
-        #   lib/(backend|frontend)-pipeline-stack.ts          → pipelines
-        #   lib/constructs/(backend-build|backend-deploy)-project.ts → pipelines
-        #   lib/frontend-stack.ts                             → edge
-        #   lib/operations-*.ts                               → observability
-        #   lib/rag-stack.ts                                  → (manual only, never auto)
-        #   everything else (backend/storage/registry/webhook/constructs/bin) → core
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            echo "targets=${{ github.event.inputs.deploy_target }}" >> "$GITHUB_OUTPUT"
-            echo "Targets (manual): ${{ github.event.inputs.deploy_target }}"
-            exit 0
-          fi
-
-          CHANGED=$(git diff --name-only HEAD~1 HEAD 2>/dev/null || echo "")
-          echo "Changed files:"
-          echo "${CHANGED:-  (none detected)}"
-
-          NEEDS_CORE=false
-          NEEDS_PIPELINES=false
-          NEEDS_EDGE=false
-          NEEDS_OBS=false
-
-          # pipelines target — BackendPipeline / FrontendPipeline stacks
-          if echo "$CHANGED" | grep -qE \
-              "^cdk/lib/(backend|frontend)-pipeline-stack\.ts$|\
-^cdk/lib/constructs/(backend-build|backend-deploy)-project\.ts$"; then
-            NEEDS_PIPELINES=true
-          fi
-
-          # edge target — Frontend CloudFront stack
-          if echo "$CHANGED" | grep -q "^cdk/lib/frontend-stack\.ts$"; then
-            NEEDS_EDGE=true
-          fi
-
-          # observability target — Operations stacks
-          if echo "$CHANGED" | grep -q "^cdk/lib/operations-"; then
-            NEEDS_OBS=true
-          fi
-
-          # core target — anything not exclusively pipeline / edge / observability / rag
-          PIPELINE_EDGE_OBS_RAG="^cdk/lib/(backend|frontend)-pipeline-stack\.ts$\
-|^cdk/lib/frontend-stack\.ts$\
-|^cdk/lib/operations-\
-|^cdk/lib/rag-stack\
-|^cdk/lib/constructs/(backend-build|backend-deploy)-project\.ts$"
-
-          CORE_CHANGES=$(echo "$CHANGED" | grep "^cdk/" | grep -cvE "$PIPELINE_EDGE_OBS_RAG" || true)
-          if [ "${CORE_CHANGES:-0}" -gt 0 ]; then
-            NEEDS_CORE=true
-          fi
-
-          # Assemble in dependency order; fall back to core if nothing matched
-          TARGETS=""
-          [ "$NEEDS_CORE" = true ]      && TARGETS="$TARGETS core"
-          [ "$NEEDS_PIPELINES" = true ] && TARGETS="$TARGETS pipelines"
-          [ "$NEEDS_EDGE" = true ]      && TARGETS="$TARGETS edge"
-          [ "$NEEDS_OBS" = true ]       && TARGETS="$TARGETS observability"
-
-          TARGETS=$(echo "$TARGETS" | xargs)
-          [ -z "$TARGETS" ] && TARGETS="core"
-
-          echo "Detected targets: [$TARGETS]"
-          echo "targets=$TARGETS" >> "$GITHUB_OUTPUT"
-        working-directory: .  # git diff runs at repo root, not cdk/
-
       - name: CDK Deploy
         env:
           CODESTAR_CONNECTION_ARN: ${{ secrets.CODESTAR_CONNECTION_ARN }}
-          TARGETS: ${{ steps.detect.outputs.targets }}
         run: |
-          deploy_target() {
-            local T=$1
-            echo "=== Deploying target: $T ==="
-            case "$T" in
-              core)
-                # DDR-047: Deploy order — Storage → Registry → Backend → Webhook → Alerts
-                # OperationsAlert included because it has cross-stack references to Backend.
-                npx cdk deploy \
-                  AiSocialMediaStorage \
-                  AiSocialMediaRegistry \
-                  AiSocialMediaBackend \
-                  AiSocialMediaWebhook \
-                  AiSocialMediaOperationsAlert \
-                  --method=direct --require-approval=never --concurrency 2
-                ;;
-              full)
-                # DDR-045/047: Full ordered deploy
-                npx cdk deploy --all --method=direct --require-approval=never --concurrency 5
-                ;;
-              rag)
-                # DDR-066: RAG stack requires explicit deployment (Aurora Serverless v2)
-                npx cdk deploy AiSocialMediaRag \
-                  --method=direct --require-approval=never
-                ;;
-              pipelines)
-                # Uses CODESTAR_CONNECTION_ARN secret if set, else SSM /ai-social-media/codestar-connection-arn
-                npx cdk deploy \
-                  AiSocialMediaBackendPipeline \
-                  AiSocialMediaFrontendPipeline \
-                  --method=direct --require-approval=never --concurrency 2
-                ;;
-              edge)
-                npx cdk deploy AiSocialMediaFrontend \
-                  --method=direct --require-approval=never
-                ;;
-              observability)
-                npx cdk deploy \
-                  AiSocialMediaOperationsAlert \
-                  AiSocialMediaOperationsMonitoring \
-                  AiSocialMediaOperationsDashboard \
-                  --method=direct --require-approval=never --concurrency 3
-                ;;
-            esac
-          }
+          # Determine deploy target
+          TARGET="${{ github.event.inputs.deploy_target || 'core' }}"
 
-          for T in $TARGETS; do
-            deploy_target "$T"
-          done
+          echo "Deploy target: $TARGET"
+
+          case "$TARGET" in
+            core)
+              # DDR-047: Deploy order — Storage → Registry → Backend → Webhook → Alerts
+              # OperationsAlert included because it has cross-stack references to Backend
+              # resources; deploying Backend alone would fail if Alert's references changed.
+              npx cdk deploy \
+                AiSocialMediaStorage \
+                AiSocialMediaRegistry \
+                AiSocialMediaBackend \
+                AiSocialMediaWebhook \
+                AiSocialMediaOperationsAlert \
+                --method=direct --require-approval=never --concurrency 2
+              ;;
+            full)
+              # DDR-045/047: Full ordered deploy
+              npx cdk deploy --all --method=direct --require-approval=never --concurrency 5
+              ;;
+            rag)
+              # DDR-066: RAG stack requires explicit deployment (Aurora Serverless v2)
+              npx cdk deploy AiSocialMediaRag \
+                --method=direct --require-approval=never
+              ;;
+            pipelines)
+              # Uses CODESTAR_CONNECTION_ARN secret if set, else SSM /ai-social-media/codestar-connection-arn
+              npx cdk deploy \
+                AiSocialMediaBackendPipeline \
+                AiSocialMediaFrontendPipeline \
+                --method=direct --require-approval=never --concurrency 2
+              ;;
+            edge)
+              npx cdk deploy AiSocialMediaFrontend \
+                --method=direct --require-approval=never
+              ;;
+            observability)
+              npx cdk deploy \
+                AiSocialMediaOperationsAlert \
+                AiSocialMediaOperationsMonitoring \
+                AiSocialMediaOperationsDashboard \
+                --method=direct --require-approval=never --concurrency 3
+              ;;
+          esac
 
       - name: Summary
         if: always()
         run: |
+          TARGET="${{ github.event.inputs.deploy_target || 'core' }}"
           echo "## CDK Deploy Summary" >> "$GITHUB_STEP_SUMMARY"
           echo "" >> "$GITHUB_STEP_SUMMARY"
           echo "| Property | Value |" >> "$GITHUB_STEP_SUMMARY"
           echo "|----------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| **Targets** | ${{ steps.detect.outputs.targets }} |" >> "$GITHUB_STEP_SUMMARY"
+          echo "| **Target** | $TARGET |" >> "$GITHUB_STEP_SUMMARY"
           echo "| **Commit** | ${{ github.sha }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| **Region** | ${{ env.AWS_REGION }} |" >> "$GITHUB_STEP_SUMMARY"
           echo "| **Status** | ${{ job.status }} |" >> "$GITHUB_STEP_SUMMARY"
