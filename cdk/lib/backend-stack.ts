@@ -82,6 +82,7 @@ export class BackendStack extends cdk.Stack {
   public readonly triagePipeline: sfn.StateMachine;
   public readonly publishPipeline: sfn.StateMachine;
   public readonly geminiBatchPollPipeline: sfn.StateMachine;
+  public readonly fbPrepPipeline: sfn.StateMachine;
 
   constructor(scope: Construct, id: string, props: BackendStackProps) {
     super(scope, id, props);
@@ -139,6 +140,7 @@ export class BackendStack extends cdk.Stack {
       triageProcessor: lambdas.triageProcessor,
       publishProcessor: lambdas.publishProcessor,
       geminiBatchPollProcessor: lambdas.geminiBatchPollProcessor,
+      fbPrepProcessor: lambdas.fbPrepProcessor,
     });
 
     // Re-export pipeline references for cross-stack access
@@ -147,6 +149,7 @@ export class BackendStack extends cdk.Stack {
     this.triagePipeline = pipelines.triagePipeline;
     this.publishPipeline = pipelines.publishPipeline;
     this.geminiBatchPollPipeline = pipelines.geminiBatchPollPipeline;
+    this.fbPrepPipeline = pipelines.fbPrepPipeline;
 
     // =====================================================================
     // 3. API Gateway + Cognito Auth
@@ -173,6 +176,7 @@ export class BackendStack extends cdk.Stack {
           pipelines.triagePipeline.stateMachineArn,
           pipelines.publishPipeline.stateMachineArn,
           pipelines.geminiBatchPollPipeline.stateMachineArn,
+          pipelines.fbPrepPipeline.stateMachineArn,
         ],
       }),
     );
@@ -211,6 +215,10 @@ export class BackendStack extends cdk.Stack {
     this.apiHandler.addEnvironment(
       'GEMINI_BATCH_POLL_SFN_ARN',
       pipelines.geminiBatchPollPipeline.stateMachineArn,
+    );
+    this.apiHandler.addEnvironment(
+      'FB_PREP_SFN_ARN',
+      pipelines.fbPrepPipeline.stateMachineArn,
     );
 
     this.apiHandler.addEnvironment(

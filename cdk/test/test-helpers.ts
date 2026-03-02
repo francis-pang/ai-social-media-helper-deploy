@@ -64,6 +64,7 @@ export const backendPipeline = new BackendPipelineStack(app, 'TestBackendPipelin
   videoProcessor: backend.videoProcessor,
   mediaProcessProcessor: backend.mediaProcessProcessor,
   geminiBatchPollProcessor: backend.geminiBatchPollProcessor,
+  fbPrepProcessor: backend.fbPrepProcessor,
   webhookEcrRepo: registry.webhookEcrRepo,
   webhookHandler: webhook.webhookHandler,
   oauthEcrRepo: registry.oauthEcrRepo,

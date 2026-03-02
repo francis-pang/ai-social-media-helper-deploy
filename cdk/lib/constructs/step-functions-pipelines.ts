@@ -19,6 +19,8 @@ export interface StepFunctionsPipelinesProps {
   publishProcessor: lambda.IFunction;
   /** Gemini Batch Poll Lambda for polling batch job status (DDR-077) */
   geminiBatchPollProcessor: lambda.IFunction;
+  /** FB Prep Lambda for AI-powered Facebook caption generation (DDR-082) */
+  fbPrepProcessor: lambda.IFunction;
 }
 
 /**
@@ -37,6 +39,7 @@ export class StepFunctionsPipelines extends Construct {
   public readonly triagePipeline: sfn.StateMachine;
   public readonly publishPipeline: sfn.StateMachine;
   public readonly geminiBatchPollPipeline: sfn.StateMachine;
+  public readonly fbPrepPipeline: sfn.StateMachine;
 
   constructor(scope: Construct, id: string, props: StepFunctionsPipelinesProps) {
     super(scope, id);
@@ -319,6 +322,71 @@ export class StepFunctionsPipelines extends Construct {
         geminiBatchWait.next(geminiBatchCheck).next(geminiBatchIsDone),
       ),
       timeout: cdk.Duration.minutes(30),
+    });
+
+    // =====================================================================
+    // FBPrep Pipeline (DDR-082)
+    // =====================================================================
+    // RunFBPrep → [batch?] → StartGeminiBatchPoll → CollectBatchResults → Succeed
+    //                      → Succeed (real-time, already complete)
+    const runFBPrep = new tasks.LambdaInvoke(this, 'RunFBPrep', {
+      lambdaFunction: props.fbPrepProcessor,
+      payload: sfn.TaskInput.fromObject({
+        type: 'fb-prep',
+        'sessionId.$': '$.sessionId',
+        'jobId.$': '$.jobId',
+        'mediaKeys.$': '$.mediaKeys',
+        'economyMode.$': '$.economyMode',
+      }),
+      resultPath: '$.prep_result',
+      retryOnServiceExceptions: true,
+    });
+    runFBPrep.addRetry({
+      errors: ['States.ALL'],
+      maxAttempts: 1,
+      backoffRate: 2,
+    });
+
+    const fbPrepSucceed = new sfn.Succeed(this, 'FBPrepSucceed');
+
+    const startGeminiBatchPoll = new tasks.StepFunctionsStartExecution(this, 'StartGeminiBatchPoll', {
+      stateMachine: this.geminiBatchPollPipeline,
+      input: sfn.TaskInput.fromObject({
+        'batch_job_id.$': '$.prep_result.Payload.batch_job_id',
+      }),
+      integrationPattern: sfn.IntegrationPattern.RUN_JOB,
+      resultPath: sfn.JsonPath.DISCARD,
+    });
+
+    const collectBatchResults = new tasks.LambdaInvoke(this, 'CollectBatchResults', {
+      lambdaFunction: props.fbPrepProcessor,
+      payload: sfn.TaskInput.fromObject({
+        type: 'fb-prep-collect-batch',
+        'sessionId.$': '$.sessionId',
+        'jobId.$': '$.jobId',
+        'batchJobId.$': '$.prep_result.Payload.batch_job_id',
+      }),
+      resultPath: sfn.JsonPath.DISCARD,
+      retryOnServiceExceptions: true,
+    });
+    collectBatchResults.addRetry({
+      errors: ['States.ALL'],
+      maxAttempts: 2,
+      backoffRate: 2,
+    });
+
+    const fbPrepIsBatch = new sfn.Choice(this, 'FBPrepIsBatch')
+      .when(
+        sfn.Condition.isPresent('$.prep_result.Payload.batch_job_id'),
+        startGeminiBatchPoll.next(collectBatchResults).next(fbPrepSucceed),
+      )
+      .otherwise(fbPrepSucceed);
+
+    this.fbPrepPipeline = new sfn.StateMachine(this, 'FBPrepPipeline', {
+      stateMachineName: 'AiSocialMediaFBPrepPipeline',
+      comment: 'FB Prep — economy mode dispatches to Gemini Batch, real-time resolves immediately (DDR-082)',
+      definitionBody: sfn.DefinitionBody.fromChainable(runFBPrep.next(fbPrepIsBatch)),
+      timeout: cdk.Duration.minutes(90),
     });
   }
 }
