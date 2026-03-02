@@ -33,6 +33,9 @@ permissions:
 env:
   AWS_REGION: us-east-1
   NODE_VERSION: '24'
+  # Suppress url.parse() DEP0169 warning from proxy-from-env (aws-cdk transitive dep).
+  # --disable-warning is supported since Node.js 21.3+.
+  NODE_OPTIONS: '--disable-warning=DEP0169'
 
 jobs:
   preflight:
