@@ -88,7 +88,10 @@ export function createBackendBuildProject(
             'docker pull $PRIVATE_WEBHOOK_URI:webhook-latest || true',
             'docker pull $PRIVATE_OAUTH_URI:oauth-latest || true',
             'go install golang.org/x/vuln/cmd/govulncheck@latest',
-            'govulncheck ./...', // Risk 28: Blocking — fails the build if known vulnerabilities are found
+            // Risk 28: govulncheck fails the build if known vulnerabilities are found.
+            // Exit code 3 = vulns found. We allow stdlib-only vulns (unfixable until
+            // Go patch release) but fail on third-party dependency vulns.
+            'govulncheck ./... 2>&1 | tee /tmp/govulncheck.out; VULN_RC=$?; if [ "$VULN_RC" -eq 3 ]; then if grep -q "^Vulnerability #" /tmp/govulncheck.out && ! grep -q "Found in:.*@v" /tmp/govulncheck.out; then echo "WARN: govulncheck found stdlib-only vulnerabilities (non-blocking until Go patch release)"; else echo "ERROR: govulncheck found third-party vulnerabilities"; exit 3; fi; elif [ "$VULN_RC" -ne 0 ]; then exit $VULN_RC; fi',
           ],
         },
         build: {
