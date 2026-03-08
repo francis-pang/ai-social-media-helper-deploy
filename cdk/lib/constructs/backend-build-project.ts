@@ -63,8 +63,8 @@ export function createBackendBuildProject(
       phases: {
         install: {
           commands: [
-            // Go 1.26 is not yet in CodeBuild AL2023 ARM standard images; install manually.
-            'curl -sL https://go.dev/dl/go1.26.0.linux-arm64.tar.gz -o /tmp/go.tar.gz',
+            // Go 1.26.1 is not yet in CodeBuild AL2023 ARM standard images; install manually.
+            'curl -sL https://go.dev/dl/go1.26.1.linux-arm64.tar.gz -o /tmp/go.tar.gz',
             'rm -rf /usr/local/go && tar -C /usr/local -xzf /tmp/go.tar.gz && rm /tmp/go.tar.gz',
             'export PATH=/usr/local/go/bin:$HOME/go/bin:$PATH',
             'go version',
