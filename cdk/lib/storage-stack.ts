@@ -120,7 +120,7 @@ export class StorageStack extends cdk.Stack {
     // Lives in StorageStack to avoid cyclic dependency: S3 event notification
     // requires bucket and Lambda in same stack (bucket -> Lambda creates Storage -> Backend cycle).
     const useLocalImages = this.node.tryGetContext('localImages') === 'true';
-    const lambdaCodeRoot = path.resolve(__dirname, '..', '..', '..', '..', 'ai-social-media-helper');
+    const lambdaCodeRoot = path.resolve(__dirname, '..', '..', '..', 'ai-social-media-helper');
     const imageCode = (
       repo: ecr.IRepository,
       tag: string,
