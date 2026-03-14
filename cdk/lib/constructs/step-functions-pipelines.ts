@@ -390,8 +390,12 @@ export class StepFunctionsPipelines extends Construct {
       }),
       resultPath: sfn.JsonPath.DISCARD,
     });
-    startGeminiBatchPoll.addCatch(markBatchError.next(fbPrepFail), {
+    const markBatchErrorChain = markBatchError.next(fbPrepFail);
+    startGeminiBatchPoll.addCatch(markBatchErrorChain, {
       resultPath: '$.batchError',
+    });
+    collectBatchResults.addCatch(markBatchErrorChain, {
+      resultPath: '$.collectError',
     });
 
     const fbPrepIsBatch = new sfn.Choice(this, 'FBPrepIsBatch')
