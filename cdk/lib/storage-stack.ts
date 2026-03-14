@@ -124,15 +124,18 @@ export class StorageStack extends cdk.Stack {
     const imageCode = (
       repo: ecr.IRepository,
       tag: string,
-      localDir: string,
+      cmdTarget: string,
     ): lambda.DockerImageCode =>
       useLocalImages
-        ? lambda.DockerImageCode.fromImageAsset(path.join(lambdaCodeRoot, localDir))
+        ? lambda.DockerImageCode.fromImageAsset(lambdaCodeRoot, {
+            file: 'build/Dockerfile.heavy',
+            buildArgs: { CMD_TARGET: cmdTarget },
+          })
         : lambda.DockerImageCode.fromEcr(repo, { tagOrDigest: tag });
 
     this.mediaProcessProcessor = new lambda.DockerImageFunction(this, 'MediaProcessProcessor', {
       description: 'Per-file media processing — validates, converts, generates thumbnails, triggered by S3 events (DDR-061)',
-      code: imageCode(props!.heavyEcrRepo, 'mediaprocess-latest', 'media-process-lambda'),
+      code: imageCode(props!.heavyEcrRepo, 'mediaprocess-latest', 'lambda/pipeline/media-process'),
       architecture: lambda.Architecture.ARM_64,
       timeout: cdk.Duration.minutes(15),  // DDR-067: increased for large video compression with adaptive presets
       memorySize: 4096,                   // DDR-067: ~2.3 vCPU (proportional allocation) for faster encoding

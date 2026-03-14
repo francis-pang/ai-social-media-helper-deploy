@@ -21,6 +21,12 @@ export interface StepFunctionsPipelinesProps {
   geminiBatchPollProcessor: lambda.IFunction;
   /** FB Prep Lambda for AI-powered Facebook caption generation (DDR-082) */
   fbPrepProcessor: lambda.IFunction;
+  /** FB Prep GCS Upload Lambda for uploading videos from S3 to GCS (batch mode) */
+  fbPrepGcsUploadProcessor: lambda.IFunction;
+  /** FB Prep Collect Batch Lambda for collecting and merging Vertex AI batch results */
+  fbPrepCollectBatchProcessor: lambda.IFunction;
+  /** FB Prep Submit Batch Lambda for submitting batch jobs to Vertex AI */
+  fbPrepSubmitBatchProcessor: lambda.IFunction;
 }
 
 /**
@@ -349,27 +355,30 @@ export class StepFunctionsPipelines extends Construct {
 
     const fbPrepSucceed = new sfn.Succeed(this, 'FBPrepSucceed');
 
-    const startGeminiBatchPoll = new tasks.StepFunctionsStartExecution(this, 'StartGeminiBatchPoll', {
-      stateMachine: this.geminiBatchPollPipeline,
-      input: sfn.TaskInput.fromObject({
-        'batch_job_id.$': '$.prep_result.Payload.batch_job_id',
-      }),
-      integrationPattern: sfn.IntegrationPattern.RUN_JOB,
-      resultPath: sfn.JsonPath.DISCARD,
-    });
-
-    const collectBatchResults = new tasks.LambdaInvoke(this, 'CollectBatchResults', {
-      lambdaFunction: props.fbPrepProcessor,
-      payload: sfn.TaskInput.fromObject({
-        type: 'fb-prep-collect-batch',
-        'sessionId.$': '$.sessionId',
-        'jobId.$': '$.jobId',
-        'batchJobId.$': '$.prep_result.Payload.batch_job_id',
-      }),
+    const collectBatchResultsPayload = {
+      'sessionId.$': '$.sessionId',
+      'jobId.$': '$.prep_result.Payload.job_id',
+      'batchJobId.$': '$.submit_result.Payload.batch_job_id',
+      'batchJobIds.$': '$.submit_result.Payload.batch_job_ids',
+    };
+    const collectBatchResultsSingle = new tasks.LambdaInvoke(this, 'CollectBatchResultsSingle', {
+      lambdaFunction: props.fbPrepCollectBatchProcessor,
+      payload: sfn.TaskInput.fromObject(collectBatchResultsPayload),
       resultPath: sfn.JsonPath.DISCARD,
       retryOnServiceExceptions: true,
     });
-    collectBatchResults.addRetry({
+    collectBatchResultsSingle.addRetry({
+      errors: ['States.ALL'],
+      maxAttempts: 2,
+      backoffRate: 2,
+    });
+    const collectBatchResultsMulti = new tasks.LambdaInvoke(this, 'CollectBatchResultsMulti', {
+      lambdaFunction: props.fbPrepCollectBatchProcessor,
+      payload: sfn.TaskInput.fromObject(collectBatchResultsPayload),
+      resultPath: sfn.JsonPath.DISCARD,
+      retryOnServiceExceptions: true,
+    });
+    collectBatchResultsMulti.addRetry({
       errors: ['States.ALL'],
       maxAttempts: 2,
       backoffRate: 2,
@@ -387,21 +396,106 @@ export class StepFunctionsPipelines extends Construct {
         type: 'fb-prep-mark-error',
         'sessionId.$': '$.sessionId',
         'jobId.$': '$.jobId',
+        'collectError.$': '$.collectError',
+        'batchError.$': '$.batchError',
       }),
       resultPath: sfn.JsonPath.DISCARD,
     });
     const markBatchErrorChain = markBatchError.next(fbPrepFail);
-    startGeminiBatchPoll.addCatch(markBatchErrorChain, {
-      resultPath: '$.batchError',
+    collectBatchResultsSingle.addCatch(markBatchErrorChain, {
+      resultPath: '$.collectError',
     });
-    collectBatchResults.addCatch(markBatchErrorChain, {
+    collectBatchResultsMulti.addCatch(markBatchErrorChain, {
       resultPath: '$.collectError',
     });
 
+    // Poll one batch job (used by Map for multi-batch).
+    const pollOneBatch = new tasks.StepFunctionsStartExecution(this, 'PollOneBatch', {
+      stateMachine: this.geminiBatchPollPipeline,
+      input: sfn.TaskInput.fromObject({
+        'batch_job_id.$': '$$.Map.Item.Value',
+      }),
+      integrationPattern: sfn.IntegrationPattern.RUN_JOB,
+      resultPath: sfn.JsonPath.DISCARD,
+    });
+
+    // Economy: Map uploads each video to GCS (one Lambda per video), then Submit, then Poll -> Collect.
+    const uploadVideoToGCS = new tasks.LambdaInvoke(this, 'UploadVideoToGCS', {
+      lambdaFunction: props.fbPrepGcsUploadProcessor,
+      payload: sfn.TaskInput.fromObject({
+        's3_key.$': '$$.Map.Item.Value.s3_key',
+        'use_key.$': '$$.Map.Item.Value.use_key',
+        'job_id.$': '$$.Map.Item.Value.job_id',
+        'batch_index.$': '$$.Map.Item.Value.batch_index',
+        'item_index_in_batch.$': '$$.Map.Item.Value.item_index_in_batch',
+      }),
+      resultPath: sfn.JsonPath.DISCARD,
+      retryOnServiceExceptions: true,
+    });
+    const mapUploadVideos = new sfn.Map(this, 'MapUploadVideos', {
+      itemsPath: '$.prep_result.Payload.videos_to_upload',
+      maxConcurrency: 10,
+      resultPath: '$.gcsUploadResults',
+      itemSelector: {
+        's3_key.$': '$$.Map.Item.Value.s3_key',
+        'use_key.$': '$$.Map.Item.Value.use_key',
+        'job_id.$': '$$.Map.Item.Value.job_id',
+        'batch_index.$': '$$.Map.Item.Value.batch_index',
+        'item_index_in_batch.$': '$$.Map.Item.Value.item_index_in_batch',
+      },
+    });
+    mapUploadVideos.itemProcessor(uploadVideoToGCS);
+    mapUploadVideos.addCatch(markBatchErrorChain, { resultPath: '$.batchError' });
+
+    const runFBPrepSubmit = new tasks.LambdaInvoke(this, 'RunFBPrepSubmit', {
+      lambdaFunction: props.fbPrepSubmitBatchProcessor,
+      payload: sfn.TaskInput.fromObject({
+        'sessionId.$': '$.sessionId',
+        'jobId.$': '$.prep_result.Payload.job_id',
+        'batchesMeta.$': '$.prep_result.Payload.batches_meta',
+        'locationTags.$': '$.prep_result.Payload.location_tags',
+        'gcsUploadResults.$': '$.gcsUploadResults',
+      }),
+      resultPath: '$.submit_result',
+      retryOnServiceExceptions: true,
+    });
+    runFBPrepSubmit.addRetry({ errors: ['States.ALL'], maxAttempts: 1, backoffRate: 2 });
+    runFBPrepSubmit.addCatch(markBatchErrorChain, { resultPath: '$.collectError' });
+
+    const pollFromSubmit = new tasks.StepFunctionsStartExecution(this, 'PollFromSubmit', {
+      stateMachine: this.geminiBatchPollPipeline,
+      input: sfn.TaskInput.fromObject({
+        'batch_job_id.$': '$.submit_result.Payload.batch_job_id',
+      }),
+      integrationPattern: sfn.IntegrationPattern.RUN_JOB,
+      resultPath: sfn.JsonPath.DISCARD,
+    });
+    pollFromSubmit.addCatch(markBatchErrorChain, { resultPath: '$.batchError' });
+
+    const mapPollsFromSubmit = new sfn.Map(this, 'MapPollsFromSubmit', {
+      itemsPath: '$.submit_result.Payload.batch_job_ids',
+      maxConcurrency: 5,
+      resultPath: sfn.JsonPath.DISCARD,
+      itemSelector: { 'batch_job_id.$': '$$.Map.Item.Value' },
+    });
+    mapPollsFromSubmit.itemProcessor(pollOneBatch);
+    mapPollsFromSubmit.addCatch(markBatchErrorChain, { resultPath: '$.batchError' });
+
     const fbPrepIsBatch = new sfn.Choice(this, 'FBPrepIsBatch')
       .when(
-        sfn.Condition.isPresent('$.prep_result.Payload.batch_job_id'),
-        startGeminiBatchPoll.next(collectBatchResults).next(fbPrepSucceed),
+        sfn.Condition.isPresent('$.prep_result.Payload.batches_meta'),
+        mapUploadVideos.next(runFBPrepSubmit).next(
+          new sfn.Choice(this, 'FBPrepSingleOrMulti')
+            .when(
+              sfn.Condition.isPresent('$.submit_result.Payload.batch_job_ids'),
+              mapPollsFromSubmit.next(collectBatchResultsMulti).next(fbPrepSucceed),
+            )
+            .when(
+              sfn.Condition.isPresent('$.submit_result.Payload.batch_job_id'),
+              pollFromSubmit.next(collectBatchResultsSingle).next(fbPrepSucceed),
+            )
+            .otherwise(fbPrepSucceed),
+        ),
       )
       .otherwise(fbPrepSucceed);
 

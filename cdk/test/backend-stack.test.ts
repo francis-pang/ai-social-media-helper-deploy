@@ -2,7 +2,7 @@ import { Template } from 'aws-cdk-lib/assertions';
 import { backend } from './test-helpers';
 
 describe('BackendStack', () => {
-  test('creates 9 Lambda functions (DDR-053)', () => {
+  test('creates 14 Lambda functions (DDR-053, DDR-077, DDR-080)', () => {
     const template = Template.fromStack(backend);
 
     // API Lambda (256 MB, 30s)
@@ -41,12 +41,12 @@ describe('BackendStack', () => {
       Timeout: 300,
     });
 
-    // Total: 9 Lambda functions (api, triage, description, download, publish, thumbnail, selection, enhancement, video)
+    // Total: 14 Lambda functions (+ fb-prep-submit-batch)
     // MediaProcess Lambda lives in StorageStack (DDR-061)
-    template.resourceCountIs('AWS::Lambda::Function', 9);
+    template.resourceCountIs('AWS::Lambda::Function', 14);
   });
 
-  test('creates 4 Step Functions state machines (DDR-052, DDR-053)', () => {
+  test('creates 6 Step Functions state machines (DDR-052, DDR-053, DDR-077, DDR-082)', () => {
     const template = Template.fromStack(backend);
 
     template.hasResourceProperties('AWS::StepFunctions::StateMachine', {
@@ -65,7 +65,7 @@ describe('BackendStack', () => {
       StateMachineName: 'AiSocialMediaPublishPipeline',
     });
 
-    template.resourceCountIs('AWS::StepFunctions::StateMachine', 4);
+    template.resourceCountIs('AWS::StepFunctions::StateMachine', 6);
   });
 
   test('creates API Gateway', () => {

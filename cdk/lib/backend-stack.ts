@@ -68,6 +68,9 @@ export class BackendStack extends cdk.Stack {
   public readonly videoProcessor: lambda.Function;
   public readonly geminiBatchPollProcessor: lambda.Function;
   public readonly fbPrepProcessor: lambda.Function;
+  public readonly fbPrepGcsUploadProcessor: lambda.Function;
+  public readonly fbPrepCollectBatchProcessor: lambda.Function;
+  public readonly fbPrepSubmitBatchProcessor: lambda.Function;
   public readonly mediaProcessProcessor: lambda.IFunction;
 
   // ECR repositories (from RegistryStack — DDR-046)
@@ -127,6 +130,9 @@ export class BackendStack extends cdk.Stack {
     this.videoProcessor = lambdas.videoProcessor;
     this.geminiBatchPollProcessor = lambdas.geminiBatchPollProcessor;
     this.fbPrepProcessor = lambdas.fbPrepProcessor;
+    this.fbPrepGcsUploadProcessor = lambdas.fbPrepGcsUploadProcessor;
+    this.fbPrepCollectBatchProcessor = lambdas.fbPrepCollectBatchProcessor;
+    this.fbPrepSubmitBatchProcessor = lambdas.fbPrepSubmitBatchProcessor;
     this.mediaProcessProcessor = props.mediaProcessProcessor;
 
     // =====================================================================
@@ -141,6 +147,9 @@ export class BackendStack extends cdk.Stack {
       publishProcessor: lambdas.publishProcessor,
       geminiBatchPollProcessor: lambdas.geminiBatchPollProcessor,
       fbPrepProcessor: lambdas.fbPrepProcessor,
+      fbPrepGcsUploadProcessor: lambdas.fbPrepGcsUploadProcessor,
+      fbPrepCollectBatchProcessor: lambdas.fbPrepCollectBatchProcessor,
+      fbPrepSubmitBatchProcessor: lambdas.fbPrepSubmitBatchProcessor,
     });
 
     // Re-export pipeline references for cross-stack access
@@ -230,6 +239,10 @@ export class BackendStack extends cdk.Stack {
       props.fileProcessingTable.tableName,
     );
     lambdas.fbPrepProcessor.addEnvironment(
+      'FILE_PROCESSING_TABLE_NAME',
+      props.fileProcessingTable.tableName,
+    );
+    lambdas.fbPrepSubmitBatchProcessor.addEnvironment(
       'FILE_PROCESSING_TABLE_NAME',
       props.fileProcessingTable.tableName,
     );

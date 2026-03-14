@@ -106,6 +106,9 @@ export function createBackendBuildProject(
             'export BUILD_THUMB=false; export BUILD_SELECT=false; export BUILD_VIDEO=false; export BUILD_MEDIAPROCESS=false',
             'export BUILD_GEMINI_BATCH_POLL=false',
             'export BUILD_FB_PREP=false',
+            'export BUILD_FB_PREP_GCS_UPLOAD=false',
+            'export BUILD_FB_PREP_COLLECT_BATCH=false',
+            'export BUILD_FB_PREP_SUBMIT_BATCH=false',
             'if [ -n "$LAST_BUILD" ] && git rev-parse "$LAST_BUILD" >/dev/null 2>&1; then '
               + 'CHANGED=$(git diff --name-only "$LAST_BUILD" HEAD); '
               + 'echo "=== Changed files since last build ($LAST_BUILD) ==="; echo "$CHANGED"; '
@@ -114,25 +117,29 @@ export function createBackendBuildProject(
               + 'else '
                 + 'export BUILD_ALL=false; '
                 + 'echo "$CHANGED" | grep -q "^cmd/api/" && export BUILD_API=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/triage-worker/" && export BUILD_TRIAGE=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/description-worker/" && export BUILD_DESC=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/download-worker/" && export BUILD_DOWNLOAD=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/publish-worker/" && export BUILD_PUBLISH=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/enhance-worker/" && export BUILD_ENHANCE=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/webhook/" && export BUILD_WEBHOOK=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/oauth/" && export BUILD_OAUTH=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/thumbnail-worker/" && export BUILD_THUMB=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/selection-worker/" && export BUILD_SELECT=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/video-worker/" && export BUILD_VIDEO=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/media-process/" && export BUILD_MEDIAPROCESS=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/gemini-batch-poll/" && export BUILD_GEMINI_BATCH_POLL=true; '
-                + 'echo "$CHANGED" | grep -q "^cmd/fb-prep-lambda/" && export BUILD_FB_PREP=true; '
-                + 'echo "Selective build: API=$BUILD_API TRIAGE=$BUILD_TRIAGE DESC=$BUILD_DESC DOWNLOAD=$BUILD_DOWNLOAD PUBLISH=$BUILD_PUBLISH ENHANCE=$BUILD_ENHANCE WEBHOOK=$BUILD_WEBHOOK OAUTH=$BUILD_OAUTH THUMB=$BUILD_THUMB SELECT=$BUILD_SELECT VIDEO=$BUILD_VIDEO MEDIAPROCESS=$BUILD_MEDIAPROCESS GEMINI_BATCH_POLL=$BUILD_GEMINI_BATCH_POLL FB_PREP=$BUILD_FB_PREP"; '
+                + 'echo "$CHANGED" | grep -q "^cmd/lambda/media-triage/" && export BUILD_TRIAGE=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/lambda/media-selection/description-worker/" && export BUILD_DESC=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/lambda/media-selection/download-worker/" && export BUILD_DOWNLOAD=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/lambda/media-selection/publish-worker/" && export BUILD_PUBLISH=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/lambda/media-selection/enhance-worker/" && export BUILD_ENHANCE=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/lambda/auth/webhook/" && export BUILD_WEBHOOK=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/lambda/auth/oauth/" && export BUILD_OAUTH=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/lambda/pipeline/thumbnail-worker/" && export BUILD_THUMB=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/lambda/media-selection/selection-worker/" && export BUILD_SELECT=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/lambda/pipeline/video-worker/" && export BUILD_VIDEO=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/lambda/pipeline/media-process/" && export BUILD_MEDIAPROCESS=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/lambda/batch/gemini-batch-poll/" && export BUILD_GEMINI_BATCH_POLL=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/lambda/fb-prep-lambda/" && export BUILD_FB_PREP=true; '
+                + 'echo "$CHANGED" | grep -q "^cmd/lambda/batch/gcs-upload/" && export BUILD_FB_PREP_GCS_UPLOAD=true; '
+                + 'echo "$CHANGED" | grep -qE "^(cmd/lambda/batch/collect-batch/|internal/fbprep/|internal/batch/)" && export BUILD_FB_PREP_COLLECT_BATCH=true; '
+                + 'echo "$CHANGED" | grep -qE "^(internal/fbprep/|internal/batch/)" && export BUILD_FB_PREP=true; '
+                + 'echo "$CHANGED" | grep -qE "^(cmd/lambda/batch/submit-batch/|internal/fbprep/|internal/batch/)" && export BUILD_FB_PREP_SUBMIT_BATCH=true; '
+                + 'echo "Selective build: API=$BUILD_API ... FB_PREP_COLLECT_BATCH=$BUILD_FB_PREP_COLLECT_BATCH FB_PREP_SUBMIT_BATCH=$BUILD_FB_PREP_SUBMIT_BATCH"; '
               + 'fi; '
             + 'else echo "No previous build commit found — rebuilding ALL images"; fi',
             // Diagnostic dump: log all build-decision variables so failures are diagnosable
             // from CloudWatch alone, without guessing.
-            'echo "=== Build decision vars ==="; echo "COMMIT=$COMMIT LAST_BUILD=$LAST_BUILD BUILD_ALL=$BUILD_ALL"; echo "BUILD_API=$BUILD_API BUILD_TRIAGE=$BUILD_TRIAGE BUILD_DESC=$BUILD_DESC BUILD_DOWNLOAD=$BUILD_DOWNLOAD BUILD_PUBLISH=$BUILD_PUBLISH"; echo "BUILD_ENHANCE=$BUILD_ENHANCE BUILD_WEBHOOK=$BUILD_WEBHOOK BUILD_OAUTH=$BUILD_OAUTH BUILD_THUMB=$BUILD_THUMB BUILD_SELECT=$BUILD_SELECT BUILD_VIDEO=$BUILD_VIDEO BUILD_MEDIAPROCESS=$BUILD_MEDIAPROCESS BUILD_GEMINI_BATCH_POLL=$BUILD_GEMINI_BATCH_POLL BUILD_FB_PREP=$BUILD_FB_PREP"; echo "PRIVATE_LIGHT_URI=$PRIVATE_LIGHT_URI PRIVATE_HEAVY_URI=$PRIVATE_HEAVY_URI"; echo "PRIVATE_WEBHOOK_URI=$PRIVATE_WEBHOOK_URI PRIVATE_OAUTH_URI=$PRIVATE_OAUTH_URI"; echo "PWD=$(pwd)"; ls -la build/Dockerfile.* 2>&1; echo "=== End vars ==="',
+            'echo "=== Build decision vars ==="; echo "COMMIT=$COMMIT LAST_BUILD=$LAST_BUILD BUILD_ALL=$BUILD_ALL"; echo "BUILD_API=$BUILD_API BUILD_TRIAGE=$BUILD_TRIAGE BUILD_DESC=$BUILD_DESC BUILD_DOWNLOAD=$BUILD_DOWNLOAD BUILD_PUBLISH=$BUILD_PUBLISH"; echo "BUILD_ENHANCE=$BUILD_ENHANCE BUILD_WEBHOOK=$BUILD_WEBHOOK BUILD_OAUTH=$BUILD_OAUTH BUILD_THUMB=$BUILD_THUMB BUILD_SELECT=$BUILD_SELECT BUILD_VIDEO=$BUILD_VIDEO BUILD_MEDIAPROCESS=$BUILD_MEDIAPROCESS BUILD_GEMINI_BATCH_POLL=$BUILD_GEMINI_BATCH_POLL BUILD_FB_PREP=$BUILD_FB_PREP BUILD_FB_PREP_GCS_UPLOAD=$BUILD_FB_PREP_GCS_UPLOAD BUILD_FB_PREP_COLLECT_BATCH=$BUILD_FB_PREP_COLLECT_BATCH BUILD_FB_PREP_SUBMIT_BATCH=$BUILD_FB_PREP_SUBMIT_BATCH"; echo "PRIVATE_LIGHT_URI=$PRIVATE_LIGHT_URI PRIVATE_HEAVY_URI=$PRIVATE_HEAVY_URI"; echo "PRIVATE_WEBHOOK_URI=$PRIVATE_WEBHOOK_URI PRIVATE_OAUTH_URI=$PRIVATE_OAUTH_URI"; echo "PWD=$(pwd)"; ls -la build/Dockerfile.* 2>&1; echo "=== End vars ==="',
             // DDR-062: Pass COMMIT_HASH build arg to all images for version identity.
             //
             // PARALLEL BUILD STRATEGY — heredoc + bash:
@@ -155,22 +162,26 @@ export function createBackendBuildProject(
               'echo ">>> Wave 1 start: $(date -u +%H:%M:%S) | BUILD_ALL=$BUILD_ALL"',
               'build_image() {',
               '  set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"',
+              '  local logname=$(echo "$cmd" | tr "/" "-")',
               '  echo ">>> [$cmd] START $(date -u +%H:%M:%S) — dockerfile=build/$df"',
               '  echo ">>> [$cmd] tags: $tags"',
               '  echo ">>> [$cmd] cache-from: $cache"',
               '  local start_ts=$(date +%s)',
-              '  docker build --provenance=false --progress=plain --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "build/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"',
+              '  docker build --provenance=false --progress=plain --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "build/$df" $tags . 2>&1 | tee "/tmp/build-$logname.log"',
               '  local rc=$?; local elapsed=$(( $(date +%s) - start_ts ))',
               '  echo ">>> [$cmd] DONE rc=$rc elapsed=${elapsed}s $(date -u +%H:%M:%S)"',
               '  return $rc',
               '}',
               '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_API" = "true" ]) && (build_image api Dockerfile.light "-t $PRIVATE_LIGHT_URI:api-$COMMIT -t $PRIVATE_LIGHT_URI:api-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-api) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_TRIAGE" = "true" ]) && (build_image triage-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:triage-$COMMIT -t $PRIVATE_LIGHT_URI:triage-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-triage) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DESC" = "true" ]) && (build_image description-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:desc-$COMMIT -t $PRIVATE_LIGHT_URI:desc-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-desc) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DOWNLOAD" = "true" ]) && (build_image download-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:download-$COMMIT -t $PRIVATE_LIGHT_URI:download-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-download) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_PUBLISH" = "true" ]) && (build_image publish-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:publish-$COMMIT -t $PRIVATE_LIGHT_URI:publish-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-publish) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_GEMINI_BATCH_POLL" = "true" ]) && (build_image gemini-batch-poll Dockerfile.light "-t $PRIVATE_LIGHT_URI:gemini-batch-poll-$COMMIT -t $PRIVATE_LIGHT_URI:gemini-batch-poll-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-gemini-batch-poll) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_FB_PREP" = "true" ]) && (build_image fb-prep-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:fb-prep-$COMMIT -t $PRIVATE_LIGHT_URI:fb-prep-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-fb-prep) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_TRIAGE" = "true" ]) && (build_image lambda/media-triage Dockerfile.light "-t $PRIVATE_LIGHT_URI:triage-$COMMIT -t $PRIVATE_LIGHT_URI:triage-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-triage) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DESC" = "true" ]) && (build_image lambda/media-selection/description-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:desc-$COMMIT -t $PRIVATE_LIGHT_URI:desc-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-desc) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_DOWNLOAD" = "true" ]) && (build_image lambda/media-selection/download-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:download-$COMMIT -t $PRIVATE_LIGHT_URI:download-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-download) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_PUBLISH" = "true" ]) && (build_image lambda/media-selection/publish-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:publish-$COMMIT -t $PRIVATE_LIGHT_URI:publish-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-publish) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_GEMINI_BATCH_POLL" = "true" ]) && (build_image lambda/batch/gemini-batch-poll Dockerfile.light "-t $PRIVATE_LIGHT_URI:gemini-batch-poll-$COMMIT -t $PRIVATE_LIGHT_URI:gemini-batch-poll-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-gemini-batch-poll) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_FB_PREP" = "true" ]) && (build_image lambda/fb-prep-lambda Dockerfile.light "-t $PRIVATE_LIGHT_URI:fb-prep-$COMMIT -t $PRIVATE_LIGHT_URI:fb-prep-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-fb-prep) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_FB_PREP_GCS_UPLOAD" = "true" ]) && (build_image lambda/batch/gcs-upload Dockerfile.light "-t $PRIVATE_LIGHT_URI:fb-prep-gcs-upload-$COMMIT -t $PRIVATE_LIGHT_URI:fb-prep-gcs-upload-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-fb-prep-gcs-upload) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_FB_PREP_COLLECT_BATCH" = "true" ]) && (build_image lambda/batch/collect-batch Dockerfile.light "-t $PRIVATE_LIGHT_URI:fb-prep-collect-batch-$COMMIT -t $PRIVATE_LIGHT_URI:fb-prep-collect-batch-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-fb-prep-collect-batch) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_FB_PREP_SUBMIT_BATCH" = "true" ]) && (build_image lambda/batch/submit-batch Dockerfile.light "-t $PRIVATE_LIGHT_URI:fb-prep-submit-batch-$COMMIT -t $PRIVATE_LIGHT_URI:fb-prep-submit-batch-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-fb-prep-submit-batch) &',
               'wait; echo ">>> Wave 1 done: $(date -u +%H:%M:%S)"',
               'ENDWAVE1',
             ].join('\n'),
@@ -182,18 +193,19 @@ export function createBackendBuildProject(
               'echo ">>> Wave 2 start: $(date -u +%H:%M:%S) | BUILD_ALL=$BUILD_ALL"',
               'build_image() {',
               '  set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"',
+              '  local logname=$(echo "$cmd" | tr "/" "-")',
               '  echo ">>> [$cmd] START $(date -u +%H:%M:%S) — dockerfile=build/$df"',
               '  echo ">>> [$cmd] tags: $tags"',
               '  local start_ts=$(date +%s)',
-              '  docker build --provenance=false --progress=plain --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "build/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"',
+              '  docker build --provenance=false --progress=plain --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "build/$df" $tags . 2>&1 | tee "/tmp/build-$logname.log"',
               '  local rc=$?; local elapsed=$(( $(date +%s) - start_ts ))',
               '  echo ">>> [$cmd] DONE rc=$rc elapsed=${elapsed}s $(date -u +%H:%M:%S)"',
               '  return $rc',
               '}',
               // Risk 37: App-specific images only go to private repos. Public repos reserved for generic base images.
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_ENHANCE" = "true" ]) && (build_image enhance-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-enhance) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_WEBHOOK" = "true" ]) && (build_image webhook Dockerfile.light "-t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest" "$PRIVATE_WEBHOOK_URI:webhook-latest" && touch /tmp/built-webhook) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_OAUTH" = "true" ]) && (build_image oauth Dockerfile.light "-t $PRIVATE_OAUTH_URI:oauth-$COMMIT -t $PRIVATE_OAUTH_URI:oauth-latest" "$PRIVATE_OAUTH_URI:oauth-latest" && touch /tmp/built-oauth) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_ENHANCE" = "true" ]) && (build_image lambda/media-selection/enhance-worker Dockerfile.light "-t $PRIVATE_LIGHT_URI:enhance-$COMMIT -t $PRIVATE_LIGHT_URI:enhance-latest" "$PRIVATE_LIGHT_URI:api-latest" && touch /tmp/built-enhance) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_WEBHOOK" = "true" ]) && (build_image lambda/auth/webhook Dockerfile.light "-t $PRIVATE_WEBHOOK_URI:webhook-$COMMIT -t $PRIVATE_WEBHOOK_URI:webhook-latest" "$PRIVATE_WEBHOOK_URI:webhook-latest" && touch /tmp/built-webhook) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_OAUTH" = "true" ]) && (build_image lambda/auth/oauth Dockerfile.light "-t $PRIVATE_OAUTH_URI:oauth-$COMMIT -t $PRIVATE_OAUTH_URI:oauth-latest" "$PRIVATE_OAUTH_URI:oauth-latest" && touch /tmp/built-oauth) &',
               'wait; echo ">>> Wave 2 done: $(date -u +%H:%M:%S)"',
               'ENDWAVE2',
             ].join('\n'),
@@ -205,25 +217,26 @@ export function createBackendBuildProject(
               'echo ">>> Wave 3 start: $(date -u +%H:%M:%S) | BUILD_ALL=$BUILD_ALL"',
               'build_image() {',
               '  set -o pipefail; local cmd=$1 df=$2 tags=$3 cache=$4 extra_args="${5:-}"',
+              '  local logname=$(echo "$cmd" | tr "/" "-")',
               '  echo ">>> [$cmd] START $(date -u +%H:%M:%S) — dockerfile=build/$df"',
               '  echo ">>> [$cmd] tags: $tags"',
               '  local start_ts=$(date +%s)',
-              '  docker build --provenance=false --progress=plain --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "build/$df" $tags . 2>&1 | tee "/tmp/build-$cmd.log"',
+              '  docker build --provenance=false --progress=plain --cache-from "$cache" --build-arg CMD_TARGET="$cmd" --build-arg COMMIT_HASH="$COMMIT" $extra_args -f "build/$df" $tags . 2>&1 | tee "/tmp/build-$logname.log"',
               '  local rc=$?; local elapsed=$(( $(date +%s) - start_ts ))',
               '  echo ">>> [$cmd] DONE rc=$rc elapsed=${elapsed}s $(date -u +%H:%M:%S)"',
               '  return $rc',
               '}',
               // Risk 37: App-specific images only go to private repos.
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_THUMB" = "true" ]) && (build_image thumbnail-worker Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-thumb) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_SELECT" = "true" ]) && (build_image selection-worker Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-select) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_THUMB" = "true" ]) && (build_image lambda/pipeline/thumbnail-worker Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:thumb-$COMMIT -t $PRIVATE_HEAVY_URI:thumb-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-thumb) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_SELECT" = "true" ]) && (build_image lambda/media-selection/selection-worker Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:select-$COMMIT -t $PRIVATE_HEAVY_URI:select-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-select) &',
               // Risk 37: App-specific images only go to private repos.
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_VIDEO" = "true" ]) && (build_image video-worker Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-video) &',
-              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_MEDIAPROCESS" = "true" ]) && (build_image media-process Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:mediaprocess-$COMMIT -t $PRIVATE_HEAVY_URI:mediaprocess-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-mediaprocess) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_VIDEO" = "true" ]) && (build_image lambda/pipeline/video-worker Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:video-$COMMIT -t $PRIVATE_HEAVY_URI:video-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-video) &',
+              '([ "$BUILD_ALL" = "true" ] || [ "$BUILD_MEDIAPROCESS" = "true" ]) && (build_image lambda/pipeline/media-process Dockerfile.heavy "-t $PRIVATE_HEAVY_URI:mediaprocess-$COMMIT -t $PRIVATE_HEAVY_URI:mediaprocess-latest" "$PRIVATE_HEAVY_URI:select-latest" "--build-arg ECR_ACCOUNT_ID=$AWS_ACCOUNT_ID" && touch /tmp/built-mediaprocess) &',
               'wait; echo ">>> Wave 3 done: $(date -u +%H:%M:%S)"',
               'ENDWAVE3',
             ].join('\n'),
             'echo "--- wave3.sh ---"; cat /tmp/wave3.sh; echo "--- end ---"; bash /tmp/wave3.sh',
-            'echo "=== Build summary ==="; for img in api triage desc download publish enhance gemini-batch-poll fb-prep webhook oauth thumb select video mediaprocess; do [ -f /tmp/built-$img ] && echo "  $img: BUILT" || echo "  $img: SKIPPED (unchanged)"; done',
+            'echo "=== Build summary ==="; for img in api triage desc download publish enhance gemini-batch-poll fb-prep fb-prep-gcs-upload fb-prep-collect-batch fb-prep-submit-batch webhook oauth thumb select video mediaprocess; do [ -f /tmp/built-$img ] && echo "  $img: BUILT" || echo "  $img: SKIPPED (unchanged)"; done',
           ],
         },
         post_build: {
@@ -248,6 +261,12 @@ export function createBackendBuildProject(
               '[ -f /tmp/built-gemini-batch-poll ] && docker push $PRIVATE_LIGHT_URI:gemini-batch-poll-latest &',
               '[ -f /tmp/built-fb-prep ] && docker push $PRIVATE_LIGHT_URI:fb-prep-$COMMIT &',
               '[ -f /tmp/built-fb-prep ] && docker push $PRIVATE_LIGHT_URI:fb-prep-latest &',
+              '[ -f /tmp/built-fb-prep-gcs-upload ] && docker push $PRIVATE_LIGHT_URI:fb-prep-gcs-upload-$COMMIT &',
+              '[ -f /tmp/built-fb-prep-gcs-upload ] && docker push $PRIVATE_LIGHT_URI:fb-prep-gcs-upload-latest &',
+              '[ -f /tmp/built-fb-prep-collect-batch ] && docker push $PRIVATE_LIGHT_URI:fb-prep-collect-batch-$COMMIT &',
+              '[ -f /tmp/built-fb-prep-collect-batch ] && docker push $PRIVATE_LIGHT_URI:fb-prep-collect-batch-latest &',
+              '[ -f /tmp/built-fb-prep-submit-batch ] && docker push $PRIVATE_LIGHT_URI:fb-prep-submit-batch-$COMMIT &',
+              '[ -f /tmp/built-fb-prep-submit-batch ] && docker push $PRIVATE_LIGHT_URI:fb-prep-submit-batch-latest &',
               '[ -f /tmp/built-select ] && docker push $PRIVATE_HEAVY_URI:select-$COMMIT &',
               '[ -f /tmp/built-select ] && docker push $PRIVATE_HEAVY_URI:select-latest &',
               '[ -f /tmp/built-thumb ] && docker push $PRIVATE_HEAVY_URI:thumb-$COMMIT &',
@@ -277,9 +296,12 @@ export function createBackendBuildProject(
             'export MEDIAPROCESS_TAG=$([ -f /tmp/built-mediaprocess ] && echo "mediaprocess-$COMMIT" || echo "mediaprocess-latest")',
             'export GEMINI_BATCH_POLL_TAG=$([ -f /tmp/built-gemini-batch-poll ] && echo "gemini-batch-poll-$COMMIT" || echo "gemini-batch-poll-latest")',
             'export FB_PREP_TAG=$([ -f /tmp/built-fb-prep ] && echo "fb-prep-$COMMIT" || echo "fb-prep-latest")',
+            'export FB_PREP_GCS_UPLOAD_TAG=$([ -f /tmp/built-fb-prep-gcs-upload ] && echo "fb-prep-gcs-upload-$COMMIT" || echo "fb-prep-gcs-upload-latest")',
+            'export FB_PREP_COLLECT_BATCH_TAG=$([ -f /tmp/built-fb-prep-collect-batch ] && echo "fb-prep-collect-batch-$COMMIT" || echo "fb-prep-collect-batch-latest")',
+            'export FB_PREP_SUBMIT_BATCH_TAG=$([ -f /tmp/built-fb-prep-submit-batch ] && echo "fb-prep-submit-batch-$COMMIT" || echo "fb-prep-submit-batch-latest")',
             'export WEBHOOK_TAG=$([ -f /tmp/built-webhook ] && echo "webhook-$COMMIT" || echo "webhook-latest")',
             'export OAUTH_TAG=$([ -f /tmp/built-oauth ] && echo "oauth-$COMMIT" || echo "oauth-latest")',
-            `echo '{"apiImage":"'$PRIVATE_LIGHT_URI:$API_TAG'","triageImage":"'$PRIVATE_LIGHT_URI:$TRIAGE_TAG'","descImage":"'$PRIVATE_LIGHT_URI:$DESC_TAG'","downloadImage":"'$PRIVATE_LIGHT_URI:$DOWNLOAD_TAG'","publishImage":"'$PRIVATE_LIGHT_URI:$PUBLISH_TAG'","enhanceImage":"'$PRIVATE_LIGHT_URI:$ENHANCE_TAG'","thumbImage":"'$PRIVATE_HEAVY_URI:$THUMB_TAG'","selectImage":"'$PRIVATE_HEAVY_URI:$SELECT_TAG'","videoImage":"'$PRIVATE_HEAVY_URI:$VIDEO_TAG'","mediaprocessImage":"'$PRIVATE_HEAVY_URI:$MEDIAPROCESS_TAG'","geminiPollImage":"'$PRIVATE_LIGHT_URI:$GEMINI_BATCH_POLL_TAG'","fbPrepImage":"'$PRIVATE_LIGHT_URI:$FB_PREP_TAG'","webhookImage":"'$PRIVATE_WEBHOOK_URI:$WEBHOOK_TAG'","oauthImage":"'$PRIVATE_OAUTH_URI:$OAUTH_TAG'","commit":"'$COMMIT'"}' > imageDetail.json`,
+            `echo '{"apiImage":"'$PRIVATE_LIGHT_URI:$API_TAG'","triageImage":"'$PRIVATE_LIGHT_URI:$TRIAGE_TAG'","descImage":"'$PRIVATE_LIGHT_URI:$DESC_TAG'","downloadImage":"'$PRIVATE_LIGHT_URI:$DOWNLOAD_TAG'","publishImage":"'$PRIVATE_LIGHT_URI:$PUBLISH_TAG'","enhanceImage":"'$PRIVATE_LIGHT_URI:$ENHANCE_TAG'","thumbImage":"'$PRIVATE_HEAVY_URI:$THUMB_TAG'","selectImage":"'$PRIVATE_HEAVY_URI:$SELECT_TAG'","videoImage":"'$PRIVATE_HEAVY_URI:$VIDEO_TAG'","mediaprocessImage":"'$PRIVATE_HEAVY_URI:$MEDIAPROCESS_TAG'","geminiPollImage":"'$PRIVATE_LIGHT_URI:$GEMINI_BATCH_POLL_TAG'","fbPrepImage":"'$PRIVATE_LIGHT_URI:$FB_PREP_TAG'","fbPrepGcsUploadImage":"'$PRIVATE_LIGHT_URI:$FB_PREP_GCS_UPLOAD_TAG'","fbPrepCollectBatchImage":"'$PRIVATE_LIGHT_URI:$FB_PREP_COLLECT_BATCH_TAG'","fbPrepSubmitBatchImage":"'$PRIVATE_LIGHT_URI:$FB_PREP_SUBMIT_BATCH_TAG'","webhookImage":"'$PRIVATE_WEBHOOK_URI:$WEBHOOK_TAG'","oauthImage":"'$PRIVATE_OAUTH_URI:$OAUTH_TAG'","commit":"'$COMMIT'"}' > imageDetail.json`,
           ],
         },
       },

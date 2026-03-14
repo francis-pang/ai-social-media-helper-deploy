@@ -183,7 +183,7 @@ export class RagStack extends cdk.Stack {
       });
 
     // --- rag-ingest-lambda (DDR-068: writes raw feedback to DynamoDB staging, no Bedrock/Aurora) ---
-    const ragIngestLambda = createRagLambda('RagIngestLambda', 'cmd/rag-ingest-lambda', 'ragingest-latest', {
+    const ragIngestLambda = createRagLambda('RagIngestLambda', 'cmd/lambda/rag/ingest', 'ragingest-latest', {
       description: 'RAG ingest — stages raw ContentFeedback from SQS to DynamoDB (DDR-068)',
       memorySize: 512,
       timeout: cdk.Duration.minutes(2),
@@ -194,14 +194,14 @@ export class RagStack extends cdk.Stack {
     ragIngestLambda.addEventSource(new lambdaEventSources.SqsEventSource(ingestQueue));
 
     // --- rag-query-lambda (DDR-068: DynamoDB profile only, no Aurora fallback) ---
-    this.ragQueryLambda = createRagLambda('RagQueryLambda', 'cmd/rag-query-lambda', 'ragquery-latest', {
+    this.ragQueryLambda = createRagLambda('RagQueryLambda', 'cmd/lambda/rag/query', 'ragquery-latest', {
       description: 'RAG query — returns pre-computed preference profile from DynamoDB (DDR-068)',
       memorySize: 256,
       timeout: cdk.Duration.seconds(10),
     });
 
     // --- rag-profile-lambda (DDR-068: daily batch — embed, ingest to Aurora, build profile, stop Aurora) ---
-    const ragProfileLambda = createRagLambda('RagProfileLambda', 'cmd/rag-profile-lambda', 'ragprofile-latest', {
+    const ragProfileLambda = createRagLambda('RagProfileLambda', 'cmd/lambda/rag/profile', 'ragprofile-latest', {
       description: 'RAG profile — daily batch: stage→embed→Aurora→profile→cleanup→stop (DDR-068)',
       memorySize: 2048,
       timeout: cdk.Duration.minutes(10),

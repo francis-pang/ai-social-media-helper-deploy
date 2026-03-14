@@ -63,6 +63,12 @@ export class ProcessingLambdas extends Construct {
   public readonly geminiBatchPollProcessor: lambda.DockerImageFunction;
   /** FB Prep Lambda — per-item caption, location, timestamp generation (DDR-078, DDR-080) */
   public readonly fbPrepProcessor: lambda.DockerImageFunction;
+  /** FB Prep GCS Upload Lambda — uploads one video from S3 to GCS for batch mode (low memory) */
+  public readonly fbPrepGcsUploadProcessor: lambda.DockerImageFunction;
+  /** FB Prep Collect Batch Lambda — collects and merges Vertex AI batch results, writes to DynamoDB */
+  public readonly fbPrepCollectBatchProcessor: lambda.DockerImageFunction;
+  /** FB Prep Submit Batch Lambda — submits batch jobs to Vertex AI */
+  public readonly fbPrepSubmitBatchProcessor: lambda.DockerImageFunction;
 
   constructor(scope: Construct, id: string, props: ProcessingLambdasProps) {
     super(scope, id);
@@ -73,16 +79,19 @@ export class ProcessingLambdas extends Construct {
     const useLocalImages = cdk.Stack.of(scope).node.tryGetContext('localImages') === 'true';
 
     // Helper: pick ECR-based or local Docker image code based on context flag.
-    // Local paths are relative to the CDK project root, pointing at the
-    // monorepo's Lambda source directories.
+    // Local: build from repo root with shared Dockerfile and CMD_TARGET.
     const lambdaCodeRoot = path.resolve(__dirname, '..', '..', '..', '..', 'ai-social-media-helper');
     const imageCode = (
       repo: ecr.IRepository,
       tag: string,
-      localDir: string,
+      cmdTarget: string,
+      dockerfile: 'light' | 'heavy' = 'light',
     ): lambda.DockerImageCode =>
       useLocalImages
-        ? lambda.DockerImageCode.fromImageAsset(path.join(lambdaCodeRoot, localDir))
+        ? lambda.DockerImageCode.fromImageAsset(lambdaCodeRoot, {
+            file: `build/Dockerfile.${dockerfile}`,
+            buildArgs: { CMD_TARGET: cmdTarget },
+          })
         : lambda.DockerImageCode.fromEcr(repo, { tagOrDigest: tag });
 
     // Shared environment variables for Lambdas that need Gemini (DDR-077: Vertex AI)
@@ -103,7 +112,7 @@ export class ProcessingLambdas extends Construct {
     // --- 1. API Lambda (256 MB, 30s, ECR Private light) ---
     this.apiHandler = createProcessingLambda(scope, 'ApiHandler', {
       description: 'HTTP API handler — routes requests, dispatches async tasks, reads Instagram credentials',
-      code: imageCode(props.lightEcrRepo, 'api-latest', 'api-lambda'),
+      code: imageCode(props.lightEcrRepo, 'api-latest', 'api'),
       timeout: cdk.Duration.seconds(30),
       memorySize: 256,
       ephemeralStorageSize: cdk.Size.mebibytes(512),
@@ -118,7 +127,7 @@ export class ProcessingLambdas extends Construct {
     // --- 2. Triage Lambda (DDR-053: 4 GB, 10 min, ECR Private light) ---
     this.triageProcessor = createProcessingLambda(scope, 'TriageProcessor', {
       description: 'Triage pipeline — uploads media to Gemini, polls file status, runs AI content triage',
-      code: imageCode(props.lightEcrRepo, 'triage-latest', 'triage-lambda'),
+      code: imageCode(props.lightEcrRepo, 'triage-latest', 'lambda/media-triage'),
       timeout: cdk.Duration.minutes(10),
       memorySize: 4096,
       ephemeralStorageSize: cdk.Size.mebibytes(6144),
@@ -128,7 +137,7 @@ export class ProcessingLambdas extends Construct {
     // --- 3. Description Lambda (DDR-053: 2 GB, 5 min, ECR Private light) ---
     this.descriptionProcessor = createProcessingLambda(scope, 'DescriptionProcessor', {
       description: 'Caption generation — uses Gemini AI to generate Instagram captions and hashtags',
-      code: imageCode(props.lightEcrRepo, 'desc-latest', 'description-lambda'),
+      code: imageCode(props.lightEcrRepo, 'desc-latest', 'lambda/media-selection/description-worker'),
       timeout: cdk.Duration.minutes(5),
       memorySize: 2048,
       ephemeralStorageSize: cdk.Size.mebibytes(512),
@@ -138,7 +147,7 @@ export class ProcessingLambdas extends Construct {
     // --- 4. Download Lambda (DDR-053: 2 GB, 10 min, ECR Private light) ---
     this.downloadProcessor = createProcessingLambda(scope, 'DownloadProcessor', {
       description: 'Download bundle — packages selected media into a ZIP archive for user download',
-      code: imageCode(props.lightEcrRepo, 'download-latest', 'download-lambda'),
+      code: imageCode(props.lightEcrRepo, 'download-latest', 'lambda/media-selection/download-worker'),
       timeout: cdk.Duration.minutes(10),
       memorySize: 2048,
       ephemeralStorageSize: cdk.Size.mebibytes(2048),
@@ -152,7 +161,7 @@ export class ProcessingLambdas extends Construct {
     // --- 5. Publish Lambda (DDR-053: 256 MB, 5 min, ECR Private light) ---
     this.publishProcessor = createProcessingLambda(scope, 'PublishProcessor', {
       description: 'Publish pipeline — creates Instagram containers, polls video status, publishes posts',
-      code: imageCode(props.lightEcrRepo, 'publish-latest', 'publish-lambda'),
+      code: imageCode(props.lightEcrRepo, 'publish-latest', 'lambda/media-selection/publish-worker'),
       timeout: cdk.Duration.minutes(5),
       memorySize: 256,
       ephemeralStorageSize: cdk.Size.mebibytes(512),
@@ -166,7 +175,7 @@ export class ProcessingLambdas extends Construct {
     // --- 6. Thumbnail Lambda (512 MB, 2 min, ECR Private heavy) ---
     this.thumbnailProcessor = createProcessingLambda(scope, 'ThumbnailProcessor', {
       description: 'Thumbnail generation — creates preview thumbnails from photos and video frames via ffmpeg',
-      code: imageCode(props.heavyEcrRepo, 'thumb-latest', 'thumbnail-lambda'),
+      code: imageCode(props.heavyEcrRepo, 'thumb-latest', 'lambda/pipeline/thumbnail-worker', 'heavy'),
       timeout: cdk.Duration.minutes(2),
       memorySize: 512,
       ephemeralStorageSize: cdk.Size.mebibytes(2048),
@@ -176,7 +185,7 @@ export class ProcessingLambdas extends Construct {
     // --- 7. Selection Lambda (4 GB, 15 min, ECR Private heavy) ---
     this.selectionProcessor = createProcessingLambda(scope, 'SelectionProcessor', {
       description: 'AI media selection — uses Gemini to rank and select the best photos/videos from uploads',
-      code: imageCode(props.heavyEcrRepo, 'select-latest', 'selection-lambda'),
+      code: imageCode(props.heavyEcrRepo, 'select-latest', 'lambda/media-selection/selection-worker', 'heavy'),
       timeout: cdk.Duration.minutes(15),
       memorySize: 4096,
       ephemeralStorageSize: cdk.Size.mebibytes(6144),
@@ -186,7 +195,7 @@ export class ProcessingLambdas extends Construct {
     // --- 8. Enhancement Lambda (DDR-053: 2 GB, 5 min, ECR Private light) ---
     this.enhancementProcessor = createProcessingLambda(scope, 'EnhancementProcessor', {
       description: 'Photo enhancement — applies AI-driven edits per photo with user feedback loop via Gemini',
-      code: imageCode(props.lightEcrRepo, 'api-latest', 'enhancement-lambda'),
+      code: imageCode(props.lightEcrRepo, 'enhance-latest', 'lambda/media-selection/enhance-worker'),
       timeout: cdk.Duration.minutes(5),
       memorySize: 2048,
       ephemeralStorageSize: cdk.Size.mebibytes(2048),
@@ -196,7 +205,7 @@ export class ProcessingLambdas extends Construct {
     // --- 9. Video Lambda (4 GB, 15 min, ECR Private heavy) ---
     this.videoProcessor = createProcessingLambda(scope, 'VideoProcessor', {
       description: 'Video processing — applies ffmpeg transformations (trim, resize, filters) per video file',
-      code: imageCode(props.heavyEcrRepo, 'video-latest', 'video-lambda'),
+      code: imageCode(props.heavyEcrRepo, 'video-latest', 'lambda/pipeline/video-worker', 'heavy'),
       timeout: cdk.Duration.minutes(15),
       memorySize: 4096,
       ephemeralStorageSize: cdk.Size.mebibytes(10240),
@@ -206,7 +215,7 @@ export class ProcessingLambdas extends Construct {
     // --- 10. GeminiBatchPoll Lambda (DDR-077: 128 MB, 10s, ECR Private light) ---
     this.geminiBatchPollProcessor = createProcessingLambda(scope, 'GeminiBatchPollProcessor', {
       description: 'Gemini Batch API poller — lightweight poller for batch operation status',
-      code: imageCode(props.lightEcrRepo, 'gemini-batch-poll-latest', 'gemini-batch-poll-lambda'),
+      code: imageCode(props.lightEcrRepo, 'gemini-batch-poll-latest', 'lambda/batch/gemini-batch-poll'),
       timeout: cdk.Duration.seconds(10),
       memorySize: 128,
       ephemeralStorageSize: cdk.Size.mebibytes(512),
@@ -216,7 +225,37 @@ export class ProcessingLambdas extends Construct {
     // --- 11. FB Prep Lambda (DDR-078, DDR-080: 2 GB, 5 min, ECR Private light) ---
     this.fbPrepProcessor = createProcessingLambda(scope, 'FBPrepProcessor', {
       description: 'FB Prep — generates captions, location tags, and timestamps for Facebook uploads via Gemini',
-      code: imageCode(props.lightEcrRepo, 'fb-prep-latest', 'fb-prep-lambda'),
+      code: imageCode(props.lightEcrRepo, 'fb-prep-latest', 'lambda/fb-prep-lambda'),
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 2048,
+      ephemeralStorageSize: cdk.Size.mebibytes(1024),
+      environment: sharedEnv,
+    });
+
+    // --- 12. FB Prep GCS Upload Lambda (512 MB, 2 min, ECR Private light) ---
+    this.fbPrepGcsUploadProcessor = createProcessingLambda(scope, 'FBPrepGcsUploadProcessor', {
+      description: 'FB Prep GCS upload — downloads one video from S3 and uploads to GCS for Vertex AI batch',
+      code: imageCode(props.lightEcrRepo, 'fb-prep-gcs-upload-latest', 'lambda/batch/gcs-upload'),
+      timeout: cdk.Duration.minutes(2),
+      memorySize: 512,
+      ephemeralStorageSize: cdk.Size.mebibytes(512),
+      environment: sharedEnv,
+    });
+
+    // --- 13. FB Prep Collect Batch Lambda (512 MB, 5 min, ECR Private light) ---
+    this.fbPrepCollectBatchProcessor = createProcessingLambda(scope, 'FBPrepCollectBatchProcessor', {
+      description: 'FB Prep collect batch — reads Vertex AI batch results, merges, writes to DynamoDB',
+      code: imageCode(props.lightEcrRepo, 'fb-prep-collect-batch-latest', 'lambda/batch/collect-batch'),
+      timeout: cdk.Duration.minutes(5),
+      memorySize: 512,
+      ephemeralStorageSize: cdk.Size.mebibytes(512),
+      environment: sharedEnv,
+    });
+
+    // --- 14. FB Prep Submit Batch Lambda (2 GB, 5 min, ECR Private light) ---
+    this.fbPrepSubmitBatchProcessor = createProcessingLambda(scope, 'FBPrepSubmitBatchProcessor', {
+      description: 'FB Prep submit batch — builds batch requests and submits to Vertex AI',
+      code: imageCode(props.lightEcrRepo, 'fb-prep-submit-batch-latest', 'lambda/batch/submit-batch'),
       timeout: cdk.Duration.minutes(5),
       memorySize: 2048,
       ephemeralStorageSize: cdk.Size.mebibytes(1024),
@@ -238,6 +277,9 @@ export class ProcessingLambdas extends Construct {
       this.videoProcessor,
       this.geminiBatchPollProcessor,
       this.fbPrepProcessor,
+      this.fbPrepGcsUploadProcessor,
+      this.fbPrepCollectBatchProcessor,
+      this.fbPrepSubmitBatchProcessor,
     ];
 
     // All Lambdas: S3 read/write/delete + DynamoDB CRUD
@@ -253,6 +295,8 @@ export class ProcessingLambdas extends Construct {
     props.fileProcessingTable.grantReadData(this.apiHandler);
     // FB Prep Lambda: file processing table read (DDR-083 — reads session-scoped FileResult for processedKey/thumbnailKey)
     props.fileProcessingTable.grantReadData(this.fbPrepProcessor);
+    // FB Prep Submit Batch Lambda: file processing table read (same as FB Prep for image keys)
+    props.fileProcessingTable.grantReadData(this.fbPrepSubmitBatchProcessor);
 
     // AI Lambdas: SSM read for Gemini API key + Vertex AI service account (DDR-053, DDR-077)
     const stack = cdk.Stack.of(scope);
@@ -269,6 +313,9 @@ export class ProcessingLambdas extends Construct {
       this.thumbnailProcessor,
       this.geminiBatchPollProcessor,
       this.fbPrepProcessor,
+      this.fbPrepGcsUploadProcessor,
+      this.fbPrepCollectBatchProcessor,
+      this.fbPrepSubmitBatchProcessor,
     ];
     for (const fn of aiLambdas) {
       fn.addToRolePolicy(
