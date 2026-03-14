@@ -481,6 +481,14 @@ export class StepFunctionsPipelines extends Construct {
     mapPollsFromSubmit.itemProcessor(pollOneBatch);
     mapPollsFromSubmit.addCatch(markBatchErrorChain, { resultPath: '$.batchError' });
 
+    const setOldLambdaError = new sfn.Pass(this, 'SetOldLambdaError', {
+      parameters: {
+        Cause:
+          'RunFBPrep returned batch_job_id (inline submit). Deploy the new fb-prep Lambda that returns batches_meta + videos_to_upload for GCS-based economy mode.',
+      },
+      resultPath: '$.collectError',
+    });
+
     const fbPrepIsBatch = new sfn.Choice(this, 'FBPrepIsBatch')
       .when(
         sfn.Condition.isPresent('$.prep_result.Payload.batches_meta'),
@@ -496,6 +504,13 @@ export class StepFunctionsPipelines extends Construct {
             )
             .otherwise(fbPrepSucceed),
         ),
+      )
+      .when(
+        sfn.Condition.or(
+          sfn.Condition.isPresent('$.prep_result.Payload.batch_job_id'),
+          sfn.Condition.isPresent('$.prep_result.Payload.batch_job_ids'),
+        ),
+        setOldLambdaError.next(markBatchErrorChain),
       )
       .otherwise(fbPrepSucceed);
 
