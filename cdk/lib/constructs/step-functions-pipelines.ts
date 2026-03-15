@@ -410,24 +410,26 @@ export class StepFunctionsPipelines extends Construct {
     });
 
     // Poll one batch job (used by Map for multi-batch).
+    // NOTE: Use $ not $$.Map.Item.Value in processor. Processor receives ItemSelector output.
     const pollOneBatch = new tasks.StepFunctionsStartExecution(this, 'PollOneBatch', {
       stateMachine: this.geminiBatchPollPipeline,
       input: sfn.TaskInput.fromObject({
-        'batch_job_id.$': '$$.Map.Item.Value',
+        'batch_job_id.$': '$.batch_job_id',
       }),
       integrationPattern: sfn.IntegrationPattern.RUN_JOB,
       resultPath: sfn.JsonPath.DISCARD,
     });
 
     // Economy: Map uploads each video to GCS (one Lambda per video), then Submit, then Poll -> Collect.
+    // NOTE: $$.Map.Item.Value is only valid in ItemSelector. Processor receives ItemSelector output; use $.
     const uploadVideoToGCS = new tasks.LambdaInvoke(this, 'UploadVideoToGCS', {
       lambdaFunction: props.fbPrepGcsUploadProcessor,
       payload: sfn.TaskInput.fromObject({
-        's3_key.$': '$$.Map.Item.Value.s3_key',
-        'use_key.$': '$$.Map.Item.Value.use_key',
-        'job_id.$': '$$.Map.Item.Value.job_id',
-        'batch_index.$': '$$.Map.Item.Value.batch_index',
-        'item_index_in_batch.$': '$$.Map.Item.Value.item_index_in_batch',
+        's3_key.$': '$.s3_key',
+        'use_key.$': '$.use_key',
+        'job_id.$': '$.job_id',
+        'batch_index.$': '$.batch_index',
+        'item_index_in_batch.$': '$.item_index_in_batch',
       }),
       resultPath: sfn.JsonPath.DISCARD,
       retryOnServiceExceptions: true,
