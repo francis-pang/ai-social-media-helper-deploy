@@ -64,21 +64,59 @@ export function createBackendDeployProject(
     }),
   });
 
-  // Override buildspec with explicit env var names (CodeBuild runs each command in shell, so
-  // variable substitution in the initial buildSpec doesn't work for dynamic lambdas list).
-  const exportCommands = lambdas.map(
-    ({ imageKey }) =>
-      `export ${toEnvVar(imageKey)}=$(python3 -c "import json; print(json.load(open('imageDetail.json'))['${imageKey}'])")`,
-  );
-  const updateCommands = lambdas.map(
-    ({ functionName, imageKey }) => {
-      const envVar = toEnvVar(imageKey);
-      return `echo "Updating ${functionName}..." && aws lambda update-function-code --function-name ${functionName} --image-uri $${envVar}`;
-    },
-  );
-  const waitCommands = lambdas.map(({ functionName }) =>
-    `aws lambda wait function-updated --function-name ${functionName}`,
-  );
+  // Override buildspec: run all deploy logic in a single script so env vars persist.
+  // CodeBuild may run each command in a separate shell; a single script guarantees
+  // exports are visible to update commands. Use CODEBUILD_SRC_DIR for artifact path.
+  const exportLines = lambdas
+    .map(
+      ({ imageKey }) =>
+        `  export ${toEnvVar(imageKey)}=$(python3 -c "import json; print(json.load(open(\\"$IMG_JSON\\"))['${imageKey}'])")`,
+    )
+    .join('\n');
+  const updateLines = lambdas
+    .map(
+      ({ functionName, imageKey }) => {
+        const envVar = toEnvVar(imageKey);
+        return [
+          `  echo "Updating ${functionName}..."`,
+          `  aws lambda update-function-code --function-name ${functionName} --image-uri "$${envVar}" || {`,
+          `    echo "ERROR: Lambda update failed for ${functionName}";`,
+          `    echo "  image_uri=$${envVar}";`,
+          `    exit 1;`,
+          `  }`,
+        ].join('\n');
+      },
+    )
+    .join('\n');
+  const waitLines = lambdas
+    .map(
+      ({ functionName }) =>
+        `  echo "Waiting for ${functionName}..." && aws lambda wait function-updated --function-name ${functionName}`,
+    )
+    .join('\n');
+
+  const deployScript = [
+    'set -euo pipefail',
+    'trap \'echo ">>> DEPLOY FAILED at line $LINENO (last command: $BASH_COMMAND)"; exit 1\' ERR',
+    'echo "=== Deploy env ==="; echo "CODEBUILD_SRC_DIR=${CODEBUILD_SRC_DIR:-<unset>}"; echo "PWD=$(pwd)"; echo "=== end ==="',
+    'IMG_JSON="${CODEBUILD_SRC_DIR:-.}/imageDetail.json"',
+    'if [ ! -f "$IMG_JSON" ]; then echo "ERROR: imageDetail.json not found at $IMG_JSON"; echo "Contents of dir:"; ls -la "${CODEBUILD_SRC_DIR:-.}/" 2>/dev/null || ls -la; exit 1; fi',
+    'echo "=== imageDetail.json ==="; cat "$IMG_JSON" | python3 -m json.tool; echo "=== end ==="',
+    exportLines,
+    ...lambdas.map(
+      ({ functionName, imageKey }) =>
+        `  echo ">>> ${functionName} -> $${toEnvVar(imageKey)}"`,
+    ),
+    updateLines,
+    waitLines,
+    'SAVE_COMMIT=$(python3 -c "import json; d=json.load(open(\\"$IMG_JSON\\")); print(d.get(\\"commit\\", \\"\\"))" 2>/dev/null) || SAVE_COMMIT="$CODEBUILD_RESOLVED_SOURCE_VERSION"',
+    '[ -n "$SAVE_COMMIT" ] && aws ssm put-parameter --name /ai-social-media/last-build-commit --value "$SAVE_COMMIT" --type String --overwrite --region ' +
+      region +
+      ' || echo "Skipping SSM save"',
+    'echo "=== Deploy completed successfully: ' +
+      lambdas.length +
+      ' Lambdas updated ==="',
+  ].join('\n');
 
   const deployCfn = project.node.defaultChild as cdk.CfnResource;
   deployCfn.addPropertyOverride(
@@ -88,17 +126,8 @@ export function createBackendDeployProject(
       phases: {
         build: {
           commands: [
-            // Diagnostic: dump full imageDetail.json so deploy failures are diagnosable
-            'echo "=== imageDetail.json ==="; cat imageDetail.json | python3 -m json.tool; echo "=== end ==="',
-            ...exportCommands,
-            // Diagnostic: dump all resolved image URIs
-            ...lambdas.map(({ functionName, imageKey }) =>
-              `echo ">>> ${functionName} -> $${toEnvVar(imageKey)}"`,
-            ),
-            ...updateCommands,
-            ...waitCommands,
-            'export SAVE_COMMIT=$(python3 -c "import json; d=json.load(open(\'imageDetail.json\')); print(d.get(\'commit\', \'\'))" 2>/dev/null || echo "$CODEBUILD_RESOLVED_SOURCE_VERSION")',
-            '[ -n "$SAVE_COMMIT" ] && aws ssm put-parameter --name /ai-social-media/last-build-commit --value "$SAVE_COMMIT" --type String --overwrite || echo "Skipping SSM save (no commit available)"',
+            "cat > /tmp/deploy.sh << 'DEPLOY_SCRIPT_END'\n" + deployScript + "\nDEPLOY_SCRIPT_END",
+            'bash /tmp/deploy.sh',
           ],
         },
       },
